@@ -6,4 +6,8 @@
 //! - título/toolbar/status bar, notificaciones, modales, command palette
 //! - i18n es desde el inicio
 //!
-//! Estado: P0 — stub. Se implementa en M0-S1 (spike) y M1 (stream A).
+//! Estado: M0-S1 — el [`spike`] demuestra el shell de 4 hojas sobre `gpui-kit`
+//! (dock, tema oscuro con acento, title bar, status bar y persistencia del
+//! layout). M1 (stream A) lo convierte en el shell de producción.
+
+pub mod spike;
