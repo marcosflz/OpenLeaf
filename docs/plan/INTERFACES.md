@@ -388,3 +388,32 @@ UI ◄── AppEvent (async_channel) ◄── servicios        ◄── reduc
 - Query `highlights.scm` propia en `assets/tree-sitter/latex/` (la del plan da 404), validada contra `node-types.json` y compilada en test.
 - Tema Default Dark sin color para `label/operator/punctuation/variable` (TODO M1-A3); captura desconocida → estilo default.
 - `\titleformat{\section}` produce nodo `section` espurio (el outline M1 filtra).
+
+### M0-S4 — Chat opencode — VERIFICADO (2026-10-17) · **tabla I-4 CONGELADA**
+
+Envoltorio: `{id:"evt_…", type, properties}`; el SSE emite **solo `data: {json}`** (sin `event:`/`id:`).
+
+| Evento SSE | → variante | Campos clave de `properties` |
+|---|---|---|
+| `server.connected` | ServerConnected | `{}` (primero; también tras reconexión) |
+| `server.heartbeat` | Heartbeat | `{}` |
+| `session.created` / `session.updated` | SessionCreated/Updated | `sessionID`, `info{id,slug,title,projectID,directory,path,agent?,model{id,providerID,variant?},version,cost,tokens,time{created,updated}}` |
+| `session.deleted` | SessionDeleted | `sessionID` |
+| `message.updated` | MessageUpdated | `sessionID`, `info{id,role:user\|assistant,time{created,completed?},modelID?,providerID?,agent?,mode?,path{cwd,root},cost,tokens,error?}` (resultados de tools llegan como role=user) |
+| `message.part.updated` | PartUpdated{part} | snapshot de `part{id,messageID,type,…}` |
+| `message.part.delta` | PartDelta | `sessionID,messageID,partID,field:"text",delta` (**sin tipo de parte** → correlacionar por partID) |
+| `message.part.removed` | PartRemoved | `sessionID,messageID,partID` |
+| `permission.asked` | PermissionAsked | `id:"per_…",sessionID,permission:"edit",patterns,metadata{filepath,diff,files[{relativePath,patch,additions,deletions}]},always["*"],tool{messageID,callID}` |
+| `permission.replied` | PermissionReplied | `sessionID,requestID,reply:"once\|always\|reject"` |
+| `session.status` | SessionStatus | `sessionID,status{type:"busy"\|"idle"\|"retry"}` |
+| `session.idle` | SessionIdle | `sessionID` (fin de turno) |
+| `session.error` | SessionError | `sessionID,error{…data.message}` |
+| `session.diff` | SessionDiff | `sessionID,diff:[…]` |
+| `file.edited` | FileEdited | `file` |
+| `plugin.added`/`catalog.updated`/`reference.updated`/`integration.updated` | Ignored | ruido de arranque |
+
+Partes: `text`, `reasoning`, `tool{tool,callID,state{pending→running→completed|error,input,title?,output?,error?,metadata?,time}}`, `step-start/finish`, `file`. Tool observada: `apply_patch` (no hardcodear lista).
+Permiso: `permission.asked` → POST `{response}` → `permission.replied` → tool error/completado. `once` real pendiente M1-E4.
+I-5: instancia global + `POST /session?directory=` por proyecto; `GET /event` global etiquetado por `sessionID`.
+Reconexión: **sin `Last-Event-ID`** → refetch de historial (`GET /session/:id/message?limit=`).
+Fixtures: `fixtures/opencode/events/spike-20261017-123649(. -mini).jsonl` + `fixtures/opencode/README.md`; seeds en `crates/chat/src/events.rs`; replayer `lsx_chat::replay`. Modelo del equipo: `opencode-go/gpt-5.6-luna`.

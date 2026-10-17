@@ -29,7 +29,7 @@
 | M0-S1 | shell / dock 4 paneles | DOING | ses_eb6356f6fffeSeXbfr5qfSoo72 |
 | M0-S2 | editor tree-sitter | ✅ DONE | informe: `docs/qa/reports/M0-S2-spike-editor.md` · I-1/I-3 resueltos · fix: `codebook-tree-sitter-latex 0.6.1` + tree-sitter 0.26.13 |
 | M0-S3 | PDF hayro (render + RenderImage) | ✅ DONE | informe: `docs/qa/reports/M0-S3-spike-pdf.md` · I-2 confirmado (visor propio) · p50 4–8 ms release |
-| M0-S4 | chat opencode (REST/SSE + fixtures) | DOING | ses_eb6356f5affeYRRCp2uc8uotkm |
+| M0-S4 | chat opencode (REST/SSE + fixtures) | ✅ DONE | informe: `docs/qa/reports/M0-S4-spike-chat.md` · **I-4/I-5 congelados** · fixtures SSE + flujo de permiso grabados |
 | M0-S5 | engine latexmk + logparse + synctex | DOING | ses_eb6356f59ffeS9HGXlbA83Atu2 |
 | M0-S6 | fs/watcher + tree component | ✅ DONE | informe: `docs/qa/reports/M0-S6-spike-fs.md` · list_dir 5,6 ms/5k · tree sin evento de selección (→ M1-F2) |
 | M0-G0 | Freeze `INTERFACES.md` | TODO | orchestrator, al cerrar S1–S6 — requiere revisión del usuario |
