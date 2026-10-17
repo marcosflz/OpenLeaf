@@ -10,3 +10,5 @@
 //! Regla dura: este crate NO conoce UI, tokio, reqwest ni gpui.
 //!
 //! Estado: P0 — stub. Se implementa en M1 (stream F) según INTERFACES.md §2.
+
+pub mod fs;
