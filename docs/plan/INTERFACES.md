@@ -389,6 +389,23 @@ UI ◄── AppEvent (async_channel) ◄── servicios        ◄── reduc
 - Tema Default Dark sin color para `label/operator/punctuation/variable` (TODO M1-A3); captura desconocida → estilo default.
 - `\titleformat{\section}` produce nodo `section` espurio (el outline M1 filtra).
 
+### M1 Stream D — motor de producción — VERIFICADO (2026-10-17)
+
+- `CompileEvent` (forma FINAL): `Queued/Started/Progress/PackageInstall/Finished/Cancelled` — **todos con `generation: u64`**; el engine emite solo `Progress/PackageInstall` (gen 0) y el `CompileController` la reescribe.
+- `CompileController` (nuevo, `lsx_latex::queue`): `new/with_settings`, `subscribe() -> Receiver<CompileEvent>` (fan-out MPMC), `set_request/submit/submit_stored/cancel/cancel_all/notify_change/status`, `set_auto_compile/set_debounce/apply_settings`. Single-flight + coalescing (1 pendiente) + debounce (400 ms default).
+- `TexLiveEngine::clean(&CleanRequest{mode: Auxiliaries|All}) -> CleanReport{removed,…}` para "Limpiar auxiliares"; `LatexSettings` (sección `latex`, camelCase, rangos saneados) + `request()`; `detect_main(project, settings_main, open_file)` con el orden del plan.
+- `DiagnosticKind` += `Underfull`/`Info` (Info sin línea para no navegar mal) + `label()`; correlación canónica: archivo por pila `(…)`, línea por contexto `l.NN`; `.blg` fusionado via `parse_bib_log`.
+- Job objects Windows (`windows-sys`, FFI mínima): `KILL_ON_JOB_CLOSE` + `CREATE_NO_WINDOW`; timeout/cancel probados con cuelgue real (`\loop\iftrue\repeat`; `\typein` NO cuelga con stdin=NUL, queda medido). Criterio G1 validado a nivel de proceso (E2E en app pendiente).
+- Panel `problems` (`crates/ui/src/panels/problems.rs`): `ProblemsModel` puro (agrupación/filtros/generaciones) + `ProblemsPanel` virtualizado; evento `ProblemsEvent::OpenSource{file,line,column}` (el panel no abre archivos).
+- Auto-install: tope **3 por compilación**; eventos `PackageInstall{package, stage: Started|Installed}`.
+
+### M1 Stream B — editor — VERIFICADO (2026-10-17)
+
+- Nueva dep aceptada: `lsx-editor` → `lsx-latex` (mapeo de `Diagnostic`; actualiza la ley de dependencias: editor puede depender de latex, nunca al revés).
+- Sesión de editor en `config/editor-session.json` propio (migrable a Settings cuando F/A lo integren; escrituras concurrentes evitadas).
+- Guardado vía `Rc<FsService>` dentro del panel (el bus AppEvent de §8 se implementará como `EventBus<T>` genérico en M1-A0; revisar en G1).
+- Panel `editor` API (para wiring A): `open_file/open_path/save/close_active/focus/apply_fs_batch/set_diagnostics/insert_active/toggle_find/…` + `EventEmitter<EditorPanelEvent>`; keybinds Ctrl+S/F/H/W, F3.
+
 ### M0-S4 — Chat opencode — VERIFICADO (2026-10-17) · **tabla I-4 CONGELADA**
 
 Envoltorio: `{id:"evt_…", type, properties}`; el SSE emite **solo `data: {json}`** (sin `event:`/`id:`).

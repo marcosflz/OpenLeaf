@@ -579,13 +579,13 @@ impl EditorPanel {
     fn on_tick(&mut self, cx: &mut Context<Self>) {
         self.seconds = self.seconds.wrapping_add(1);
         let backup_due =
-            self.backup_interval_secs > 0 && self.seconds % self.backup_interval_secs == 0;
+            self.backup_interval_secs > 0 && self.seconds.is_multiple_of(self.backup_interval_secs);
         if backup_due {
             self.flush_backups(cx);
         }
         if self.autosave.enabled {
             let interval = self.autosave.interval_secs.max(1);
-            if self.seconds % interval == 0 {
+            if self.seconds.is_multiple_of(interval) {
                 self.flush_autosave(cx);
             }
         }
@@ -1254,7 +1254,7 @@ impl EditorPanel {
         if let Some(ix) = self.active {
             self.docs[ix]
                 .editor
-                .update(cx, |state, cx| find::close(state, cx));
+                .update(cx, find::close);
         }
         self.focus_active(window, cx);
         cx.notify();
@@ -1593,7 +1593,7 @@ impl Render for EditorPanel {
             let weak = cx.weak_entity();
             window.defer(cx, move |window, cx| {
                 if let Some(panel) = weak.upgrade() {
-                    let _ = panel.update(cx, |panel, cx| {
+                    panel.update(cx, |panel, cx| {
                         panel.open_recovery_dialog(candidates.clone(), window, cx)
                     });
                 }
