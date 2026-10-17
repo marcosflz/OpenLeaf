@@ -39,6 +39,15 @@ use gpui_kit::{
 };
 use lsx_core::fs::{EntryKind, FsEvent, FsService, WatcherGuard};
 
+/// Evento que el panel reenvía al shell (integración M1: editor + auto-compile).
+#[derive(Clone, Debug)]
+pub enum TreeFsEvent {
+    /// Lote agrupado del watcher (el mismo que refresca el árbol).
+    Batch(Vec<FsEvent>),
+}
+
+impl gpui_kit::EventEmitter<TreeFsEvent> for TreePanel {}
+
 use crate::layout::SlotKind;
 use crate::panels::{Pane, PaneEvent, PaneState, pane_container};
 use crate::project::ProjectInfo;
@@ -350,6 +359,7 @@ impl TreePanel {
     // --- eventos del watcher ----------------------------------------------
 
     fn on_fs_batch(&mut self, batch: Vec<FsEvent>, cx: &mut Context<Self>) {
+        cx.emit(TreeFsEvent::Batch(batch.clone()));
         let stamp = stamp();
         let mut created = 0usize;
         let mut modified = 0usize;

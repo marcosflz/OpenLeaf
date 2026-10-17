@@ -21,8 +21,12 @@
 //!
 //! Los paneles no conocen este tipo: emiten [`PaneEvent`]s y el shell decide.
 
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
+use camino::Utf8Path;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     ActiveTheme as _, Selectable as _, Sizable as _, TitleBar, WindowExt as _,
@@ -36,16 +40,23 @@ use gpui_kit::component::{
 };
 use gpui_kit::{
     App, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
-    ParentElement as _, Pixels, Render, SharedString, Styled as _, Subscription, Task, Window, div,
-    px,
+    ParentElement as _, Pixels, Render, SharedString, Styled as _, Subscription, Task, WeakEntity,
+    Window, div, px,
 };
 use lsx_core::config::{ConfigWarning, Settings};
 use lsx_core::root::PortableRoot;
+use lsx_latex::{
+    CompileController, CompileEvent, CompileStatus, Diagnostic, LatexEngine, LatexSettings,
+    TexLiveEngine, detect_main,
+};
 
 use crate::layout::{FocusMode, ShellLayout, SlotKind};
 use crate::notifications;
 use crate::palette::PaletteCommand;
-use crate::panels::{PaneEvent, PlaceholderPanel, TreePanel};
+use crate::panels::editor::{EditorPanel, EditorPanelConfig, EditorPanelEvent};
+use crate::panels::problems::{ProblemsEvent, ProblemsPanel};
+use crate::panels::tree::TreeFsEvent;
+use crate::panels::{Pane, PaneEvent, PaneState, PlaceholderPanel, TreePanel, pane_container};
 use crate::permission::{PermissionCard, PermissionRequest};
 use crate::project::ProjectService;
 use crate::settings_ui;
@@ -105,16 +116,23 @@ pub struct AppRoot {
     active: SlotKind,
     dock: Entity<DockArea>,
     tree: Entity<TreePanel>,
-    editor: Entity<PlaceholderPanel>,
+    editor: Entity<EditorSlot>,
+    editor_panel: Entity<EditorPanel>,
     pdf: Entity<PlaceholderPanel>,
     chat: Entity<PlaceholderPanel>,
+    problems: Entity<ProblemsPanel>,
+    project_root: Option<PathBuf>,
+    latex_settings: LatexSettings,
+    compile: Option<Arc<CompileController>>,
     focus: FocusHandle,
     palette: Entity<CommandState>,
     layout_generation: u64,
     layout_dirty: bool,
     _status_task: Task<()>,
+    _compile_task: Task<()>,
     _dock_events: Subscription,
     _pane_events: Vec<Subscription>,
+    _integration_events: Vec<Subscription>,
 }
 
 impl AppRoot {
@@ -141,8 +159,29 @@ impl AppRoot {
                 cx,
             )
         });
-        let editor =
-            cx.new(|cx| PlaceholderPanel::new(SlotKind::Editor, Some(dock.downgrade()), cx));
+        // Editor real (M1-B) + panel de problemas (M1-D) apilados en la hoja.
+        let project_root = startup.as_ref().map(|project| project.root.clone());
+        let editor_root = project_root
+            .clone()
+            .unwrap_or_else(|| portable.default_workspace());
+        let editor_panel = cx.new(|cx| {
+            EditorPanel::with_config(
+                editor_root,
+                portable.config_dir(),
+                EditorPanelConfig::default(),
+                window,
+                cx,
+            )
+        });
+        let problems = cx.new(|cx| ProblemsPanel::new(window, cx));
+        let editor = cx.new(|cx| {
+            EditorSlot::new(
+                editor_panel.clone(),
+                problems.clone(),
+                Some(dock.downgrade()),
+                cx,
+            )
+        });
         let pdf = cx.new(|cx| PlaceholderPanel::new(SlotKind::Pdf, Some(dock.downgrade()), cx));
         let chat = cx.new(|cx| PlaceholderPanel::new(SlotKind::Chat, Some(dock.downgrade()), cx));
 
@@ -212,6 +251,70 @@ impl AppRoot {
             }
         });
 
+        // --- Compilación (integración M1): motor real + cola con debounce -----
+        let latex_settings = bridge_latex_settings(&settings.latex);
+        let compile: Option<Arc<CompileController>> = TexLiveEngine::detect().ok().map(|engine| {
+            let engine: Arc<dyn LatexEngine> = Arc::new(engine);
+            let controller = CompileController::with_settings(engine, &latex_settings);
+            if let Some(root) = project_root.as_deref()
+                && let Some(root) = Utf8Path::from_path(root)
+                && let Ok(Some(main)) = detect_main(root, latex_settings.main_file.as_deref(), None)
+            {
+                controller.set_request(latex_settings.request(root, main));
+            }
+            Arc::new(controller)
+        });
+        let compile_task = if let Some(controller) = &compile {
+            let rx = controller.subscribe();
+            cx.spawn(async move |this, cx| {
+                while let Ok(event) = rx.recv().await {
+                    if this
+                        .update(cx, |root, cx| root.on_compile_event(event, cx))
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            })
+        } else {
+            cx.spawn(async move |_this, _cx| {})
+        };
+
+        let integration_events = vec![
+            cx.subscribe_in(
+                &tree,
+                window,
+                |this, _tree, event: &TreeFsEvent, window, cx| {
+                    let TreeFsEvent::Batch(batch) = event;
+                    let batch = batch.clone();
+                    this.editor_panel.update(cx, |panel, cx| {
+                        panel.apply_fs_batch(batch, window, cx);
+                    });
+                    if let Some(controller) = &this.compile {
+                        controller.notify_change();
+                    }
+                },
+            ),
+            cx.subscribe_in(
+                &editor_panel,
+                window,
+                |this, _panel, event: &EditorPanelEvent, window, cx| {
+                    this.on_editor_event(event, window, cx);
+                },
+            ),
+            cx.subscribe_in(
+                &problems,
+                window,
+                |this, _panel, event: &ProblemsEvent, window, cx| {
+                    let ProblemsEvent::OpenSource { file, line, .. } = event;
+                    let rel = file.as_std_path().to_path_buf();
+                    this.editor_panel.update(cx, |panel, cx| {
+                        panel.open_file(rel, Some(*line), window, cx);
+                    });
+                },
+            ),
+        ];
+
         let focus = cx.focus_handle();
         let palette = cx.new(|cx| CommandState::new(window, cx));
 
@@ -256,15 +359,22 @@ impl AppRoot {
             dock,
             tree,
             editor,
+            editor_panel,
             pdf,
             chat,
+            problems,
+            project_root,
+            latex_settings,
+            compile,
             focus,
             palette,
             layout_generation: 0,
             layout_dirty: false,
             _status_task: status_task,
+            _compile_task: compile_task,
             _dock_events: dock_events,
             _pane_events: pane_events,
+            _integration_events: integration_events,
         };
         let layout = root.layout.clone();
         root.apply_layout(&layout, window, cx);
@@ -312,7 +422,7 @@ impl AppRoot {
     fn panel(&self, kind: SlotKind) -> AnyPanel {
         match kind {
             SlotKind::Tree => AnyPanel::Tree(self.tree.clone()),
-            SlotKind::Editor => AnyPanel::Placeholder(self.editor.clone()),
+            SlotKind::Editor => AnyPanel::Editor(self.editor.clone()),
             SlotKind::Pdf => AnyPanel::Placeholder(self.pdf.clone()),
             SlotKind::Chat => AnyPanel::Placeholder(self.chat.clone()),
         }
@@ -563,13 +673,126 @@ impl AppRoot {
 
     // --- acciones de shell ---------------------------------------------------
 
-    /// Compilar (placeholder hasta M1-D2: solo informa).
+    /// Compilar el proyecto (botón ▶, paleta o Ctrl+Alt+B).
     pub fn request_compile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(controller) = self.compile.clone() {
+            if controller.submit_stored().is_some() {
+                return;
+            }
+            // Último recurso: el .tex activo como documento principal.
+            if let (Some(root), Some(path)) = (
+                self.project_root.clone(),
+                self.editor_panel.read(cx).active_path(),
+            ) && path.ends_with(".tex")
+                && let Some(root) = Utf8Path::from_path(&root)
+            {
+                controller.set_request(self.latex_settings.request(root, path.as_str()));
+                if controller.submit_stored().is_some() {
+                    return;
+                }
+            }
+        }
         notifications::info(
-            rust_i18n::t!("ui.app.toolbar.compile_pending").to_string(),
+            rust_i18n::t!("ui.app.toolbar.compile_unavailable").to_string(),
             window,
             cx,
         );
+        cx.notify();
+    }
+
+    /// Reduce un evento de la cola de compilación (integración M1-D2).
+    fn on_compile_event(&mut self, event: CompileEvent, cx: &mut Context<Self>) {
+        use crate::status::{CompileState, StatusMessage};
+
+        match event {
+            CompileEvent::Queued { .. } => {
+                self.status_handle
+                    .send(StatusMessage::Compile(CompileState::Queued));
+            }
+            CompileEvent::Started { .. } => {
+                self.status_handle
+                    .send(StatusMessage::Compile(CompileState::Running { hint: None }));
+            }
+            CompileEvent::Progress { line, .. } => {
+                self.status_handle
+                    .send(StatusMessage::Compile(CompileState::Running {
+                        hint: Some(line),
+                    }));
+            }
+            CompileEvent::PackageInstall { package, stage, .. } => {
+                let hint = match stage {
+                    lsx_latex::engine::PackageInstallStage::Started => {
+                        rust_i18n::t!("ui.app.toolbar.compile_installing", package = package)
+                            .to_string()
+                    }
+                    _ => rust_i18n::t!("ui.app.toolbar.compile_installed", package = package)
+                        .to_string(),
+                };
+                self.status_handle
+                    .send(StatusMessage::Compile(CompileState::Running {
+                        hint: Some(hint),
+                    }));
+            }
+            CompileEvent::Finished {
+                generation,
+                outcome,
+            } => {
+                match outcome.status {
+                    CompileStatus::Success => {
+                        self.status_handle
+                            .send(StatusMessage::Compile(CompileState::Success {
+                                duration_ms: outcome.duration.as_millis() as u64,
+                            }));
+                    }
+                    CompileStatus::Cancelled => {
+                        self.status_handle
+                            .send(StatusMessage::Compile(CompileState::Idle));
+                    }
+                    CompileStatus::Failed | CompileStatus::Timeout => {
+                        self.status_handle
+                            .send(StatusMessage::Compile(CompileState::Failed {
+                                message: rust_i18n::t!("ui.app.toolbar.compile_failed_short")
+                                    .to_string(),
+                            }));
+                    }
+                }
+                self.problems.update(cx, |panel, cx| {
+                    panel.apply_outcome(generation, &outcome, cx);
+                });
+                let mut by_file: BTreeMap<camino::Utf8PathBuf, Vec<Diagnostic>> = BTreeMap::new();
+                for diag in &outcome.diagnostics {
+                    if let Some(file) = &diag.file {
+                        by_file.entry(file.clone()).or_default().push(diag.clone());
+                    }
+                }
+                self.editor_panel.update(cx, |panel, cx| {
+                    for (file, diags) in &by_file {
+                        panel.set_diagnostics(file.as_std_path(), diags, cx);
+                    }
+                });
+                cx.notify();
+            }
+            CompileEvent::Cancelled { .. } => {
+                self.status_handle
+                    .send(StatusMessage::Compile(CompileState::Idle));
+            }
+        }
+    }
+
+    /// Eventos del panel de editor (apertura de documento → posible main.tex).
+    fn on_editor_event(
+        &mut self,
+        event: &EditorPanelEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let EditorPanelEvent::Opened { path } = event
+            && path.ends_with(".tex")
+            && let (Some(controller), Some(root)) = (&self.compile, &self.project_root)
+            && let Some(root) = Utf8Path::from_path(root)
+        {
+            controller.set_request(self.latex_settings.request(root, path.as_str()));
+        }
         cx.notify();
     }
 
@@ -834,9 +1057,119 @@ impl AppRoot {
     }
 }
 
+/// Hoja Editor del shell: editor real (M1-B) + panel de problemas (M1-D).
+struct EditorSlot {
+    state: PaneState,
+    editor: Entity<EditorPanel>,
+    problems: Entity<ProblemsPanel>,
+}
+
+impl EditorSlot {
+    fn new(
+        editor: Entity<EditorPanel>,
+        problems: Entity<ProblemsPanel>,
+        dock_area: Option<WeakEntity<DockArea>>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self {
+            state: PaneState::new(SlotKind::Editor, dock_area, cx),
+            editor,
+            problems,
+        }
+    }
+
+    fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        self.state.set_visible(visible, cx);
+    }
+}
+
+impl Pane for EditorSlot {
+    fn pane_state(&self) -> &PaneState {
+        &self.state
+    }
+
+    fn pane_state_mut(&mut self) -> &mut PaneState {
+        &mut self.state
+    }
+}
+
+impl gpui_kit::component::dock::BasePanel for EditorSlot {
+    fn panel_name(&self) -> &'static str {
+        self.state.kind().panel_name()
+    }
+
+    fn visible(&self, cx: &App) -> bool {
+        self.pane_visible(cx)
+    }
+
+    fn closable(&self, cx: &App) -> bool {
+        self.pane_closable(cx)
+    }
+
+    fn set_active(&mut self, active: bool, _window: &mut Window, cx: &mut Context<Self>) {
+        self.state.set_active(active, cx);
+    }
+}
+
+impl gpui_kit::component::dock::Panel for EditorSlot {
+    fn tab_name(&self, _cx: &App) -> Option<SharedString> {
+        Some(self.pane_title().into())
+    }
+
+    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        self.pane_title()
+    }
+
+    fn toolbar_buttons(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Vec<Button>> {
+        Some(vec![self.collapse_button(cx)])
+    }
+}
+
+impl gpui_kit::EventEmitter<gpui_kit::component::dock::PanelEvent> for EditorSlot {}
+
+impl gpui_kit::EventEmitter<PaneEvent> for EditorSlot {}
+
+impl gpui_kit::Focusable for EditorSlot {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.state.focus_handle().clone()
+    }
+}
+
+impl Render for EditorSlot {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let problems_visible = self.problems.read(cx).is_visible();
+        let mut el = pane_container(SlotKind::Editor, cx)
+            .flex()
+            .flex_col()
+            .track_focus(self.state.focus_handle())
+            .on_mouse_down(
+                gpui_kit::MouseButton::Left,
+                cx.listener(|this, _, window, cx| this.activate_by_user(window, cx)),
+            )
+            .child(div().flex_1().min_h_0().child(self.editor.clone()));
+        if problems_visible {
+            el = el.child(div().flex_none().h(px(216.)).child(self.problems.clone()));
+        }
+        el
+    }
+}
+
+/// Convierte la sección `latex` de `settings.json` (lsx-core) al tipo del motor.
+fn bridge_latex_settings(section: &lsx_core::config::LatexSettings) -> LatexSettings {
+    serde_json::to_value(section)
+        .ok()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default()
+}
+
 /// Panel homogéneo para el shell (el dock los mantiene como entidades propias).
 enum AnyPanel {
     Tree(Entity<TreePanel>),
+    Editor(Entity<EditorSlot>),
     Placeholder(Entity<PlaceholderPanel>),
 }
 
@@ -844,6 +1177,9 @@ impl AnyPanel {
     fn set_visible(&self, visible: bool, cx: &mut App) {
         match self {
             AnyPanel::Tree(panel) => {
+                panel.update(cx, |panel, cx| panel.set_visible(visible, cx));
+            }
+            AnyPanel::Editor(panel) => {
                 panel.update(cx, |panel, cx| panel.set_visible(visible, cx));
             }
             AnyPanel::Placeholder(panel) => {
