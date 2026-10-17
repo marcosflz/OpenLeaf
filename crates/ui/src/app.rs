@@ -26,7 +26,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use camino::Utf8Path;
+use camino::{Utf8Path, Utf8PathBuf};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     ActiveTheme as _, Selectable as _, Sizable as _, TitleBar, WindowExt as _,
@@ -54,6 +54,7 @@ use crate::layout::{FocusMode, ShellLayout, SlotKind};
 use crate::notifications;
 use crate::palette::PaletteCommand;
 use crate::panels::editor::{EditorPanel, EditorPanelConfig, EditorPanelEvent};
+use crate::panels::pdf::{PdfPanel, SyncRect};
 use crate::panels::problems::{ProblemsEvent, ProblemsPanel};
 use crate::panels::tree::TreeFsEvent;
 use crate::panels::{Pane, PaneEvent, PaneState, PlaceholderPanel, TreePanel, pane_container};
@@ -75,6 +76,7 @@ gpui_kit::actions!(
         TogglePdfPane,
         ToggleChatPane,
         ToggleFocusMode,
+        SyncForward,
         OpenPalette,
         OpenSettingsPane
     ]
@@ -99,6 +101,7 @@ pub fn register_keybindings(cx: &mut App) {
         KeyBinding::new("ctrl-alt-v", TogglePdfPane, None),
         KeyBinding::new("ctrl-alt-4", ToggleChatPane, None),
         KeyBinding::new("ctrl-alt-m", ToggleFocusMode, None),
+        KeyBinding::new("ctrl-alt-j", SyncForward, None),
         KeyBinding::new("ctrl-p", OpenPalette, None),
         KeyBinding::new("ctrl-,", OpenSettingsPane, None),
     ]);
@@ -118,7 +121,9 @@ pub struct AppRoot {
     tree: Entity<TreePanel>,
     editor: Entity<EditorSlot>,
     editor_panel: Entity<EditorPanel>,
-    pdf: Entity<PlaceholderPanel>,
+    pdf: Entity<PdfSlot>,
+    pdf_panel: Entity<PdfPanel>,
+    last_pdf: Option<PathBuf>,
     chat: Entity<PlaceholderPanel>,
     problems: Entity<ProblemsPanel>,
     project_root: Option<PathBuf>,
@@ -182,7 +187,21 @@ impl AppRoot {
                 cx,
             )
         });
-        let pdf = cx.new(|cx| PlaceholderPanel::new(SlotKind::Pdf, Some(dock.downgrade()), cx));
+        let pdf_panel = cx.new(|cx| PdfPanel::with_cache_mb(settings.pdf.max_cache_mb, cx));
+        {
+            let editor_for_inverse = editor_panel.clone();
+            pdf_panel.update(cx, |panel, cx| {
+                panel.on_inverse_jump(
+                    move |jump, window, cx| {
+                        editor_for_inverse.update(cx, |editor, cx| {
+                            editor.open_path(jump.file, Some(jump.line), window, cx);
+                        });
+                    },
+                    cx,
+                );
+            });
+        }
+        let pdf = cx.new(|cx| PdfSlot::new(pdf_panel.clone(), Some(dock.downgrade()), cx));
         let chat = cx.new(|cx| PlaceholderPanel::new(SlotKind::Chat, Some(dock.downgrade()), cx));
 
         let mut dock_layout = DockLayout::h_split();
@@ -253,14 +272,22 @@ impl AppRoot {
 
         // --- Compilación (integración M1): motor real + cola con debounce -----
         let latex_settings = bridge_latex_settings(&settings.latex);
+        let startup_main: Option<Utf8PathBuf> = project_root
+            .as_deref()
+            .and_then(Utf8Path::from_path)
+            .and_then(|root| {
+                detect_main(root, latex_settings.main_file.as_deref(), None)
+                    .ok()
+                    .flatten()
+            });
         let compile: Option<Arc<CompileController>> = TexLiveEngine::detect().ok().map(|engine| {
             let engine: Arc<dyn LatexEngine> = Arc::new(engine);
             let controller = CompileController::with_settings(engine, &latex_settings);
-            if let Some(root) = project_root.as_deref()
-                && let Some(root) = Utf8Path::from_path(root)
-                && let Ok(Some(main)) = detect_main(root, latex_settings.main_file.as_deref(), None)
-            {
-                controller.set_request(latex_settings.request(root, main));
+            if let (Some(root), Some(main)) = (
+                project_root.as_deref().and_then(Utf8Path::from_path),
+                startup_main.as_ref(),
+            ) {
+                controller.set_request(latex_settings.request(root, main.clone()));
             }
             Arc::new(controller)
         });
@@ -361,6 +388,8 @@ impl AppRoot {
             editor,
             editor_panel,
             pdf,
+            pdf_panel,
+            last_pdf: None,
             chat,
             problems,
             project_root,
@@ -378,6 +407,30 @@ impl AppRoot {
         };
         let layout = root.layout.clone();
         root.apply_layout(&layout, window, cx);
+
+        // Preload del proyecto: si hay un main.tex detectado (con PDF hermano),
+        // se abre en el editor y su PDF se carga en el visor.
+        if let Some(main) = &startup_main {
+            let pdf_sibling = main.with_extension("pdf");
+            if pdf_sibling.is_file() {
+                let pdf_path = pdf_sibling.clone().into_std_path_buf();
+                root.last_pdf = Some(pdf_path.clone());
+                root.pdf_panel.update(cx, |panel, cx| {
+                    panel.set_document(pdf_path, 1, cx);
+                });
+            }
+            let rel = root
+                .project_root
+                .as_deref()
+                .and_then(Utf8Path::from_path)
+                .and_then(|project| main.strip_prefix(project).ok())
+                .map(|rel| rel.to_string());
+            if let Some(rel) = rel {
+                root.editor_panel.update(cx, |panel, cx| {
+                    panel.open_file(rel, None, window, cx);
+                });
+            }
+        }
 
         // El foco arranca en la raíz para que los atajos globales siempre
         // encuentren un `on_action` vivo.
@@ -423,7 +476,7 @@ impl AppRoot {
         match kind {
             SlotKind::Tree => AnyPanel::Tree(self.tree.clone()),
             SlotKind::Editor => AnyPanel::Editor(self.editor.clone()),
-            SlotKind::Pdf => AnyPanel::Placeholder(self.pdf.clone()),
+            SlotKind::Pdf => AnyPanel::Pdf(self.pdf.clone()),
             SlotKind::Chat => AnyPanel::Placeholder(self.chat.clone()),
         }
     }
@@ -759,6 +812,13 @@ impl AppRoot {
                 self.problems.update(cx, |panel, cx| {
                     panel.apply_outcome(generation, &outcome, cx);
                 });
+                if let Some(pdf_path) = &outcome.pdf {
+                    let pdf_path = pdf_path.as_std_path().to_path_buf();
+                    self.last_pdf = Some(pdf_path.clone());
+                    self.pdf_panel.update(cx, |panel, cx| {
+                        panel.set_document(pdf_path, generation, cx);
+                    });
+                }
                 let mut by_file: BTreeMap<camino::Utf8PathBuf, Vec<Diagnostic>> = BTreeMap::new();
                 for diag in &outcome.diagnostics {
                     if let Some(file) = &diag.file {
@@ -794,6 +854,59 @@ impl AppRoot {
             controller.set_request(self.latex_settings.request(root, path.as_str()));
         }
         cx.notify();
+    }
+
+    /// SyncTeX forward (Ctrl+Alt+J): cursor → rectángulo en el PDF.
+    fn sync_forward(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(pdf_path) = self.last_pdf.clone() else {
+            notifications::info(
+                rust_i18n::t!("ui.app.toolbar.sync_no_pdf").to_string(),
+                window,
+                cx,
+            );
+            return;
+        };
+        let (rel, cursor) = (
+            self.editor_panel.read(cx).active_path(),
+            self.editor_panel.read(cx).active_cursor(cx),
+        );
+        let (Some(rel), Some((line, _column))) = (rel, cursor) else {
+            notifications::info(
+                rust_i18n::t!("ui.app.toolbar.sync_no_editor").to_string(),
+                window,
+                cx,
+            );
+            return;
+        };
+        let Some(root) = self.project_root.clone() else {
+            return;
+        };
+        let src = root.join(&rel);
+        let (Some(pdf_u8), Some(src_u8)) =
+            (Utf8Path::from_path(&pdf_path), Utf8Path::from_path(&src))
+        else {
+            return;
+        };
+        let Ok(exe) = Utf8PathBuf::from_path_buf(self.portable.synctex_exe()) else {
+            return;
+        };
+        let synctex = lsx_latex::Synctex::new(exe);
+        match synctex.forward_all(pdf_u8, src_u8, line, 0) {
+            Ok(records) if !records.is_empty() => {
+                let rect = SyncRect::from_record(&records[0]);
+                let page = rect.page;
+                self.pdf_panel.update(cx, |panel, cx| {
+                    panel.goto_page(page, cx);
+                    panel.flash_sync_rect(rect, cx);
+                });
+            }
+            Ok(_) => notifications::info(
+                rust_i18n::t!("ui.app.toolbar.sync_no_match").to_string(),
+                window,
+                cx,
+            ),
+            Err(err) => notifications::error(format!("SyncTeX: {err}"), window, cx),
+        }
     }
 
     /// Abre la paleta de comandos (Ctrl+P).
@@ -1057,6 +1170,99 @@ impl AppRoot {
     }
 }
 
+/// Hoja PDF del shell: visor real (M1-C) con el chrome del contrato `Pane`.
+struct PdfSlot {
+    state: PaneState,
+    pdf: Entity<PdfPanel>,
+}
+
+impl PdfSlot {
+    fn new(
+        pdf: Entity<PdfPanel>,
+        dock_area: Option<WeakEntity<DockArea>>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self {
+            state: PaneState::new(SlotKind::Pdf, dock_area, cx),
+            pdf,
+        }
+    }
+
+    fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        self.state.set_visible(visible, cx);
+    }
+}
+
+impl Pane for PdfSlot {
+    fn pane_state(&self) -> &PaneState {
+        &self.state
+    }
+
+    fn pane_state_mut(&mut self) -> &mut PaneState {
+        &mut self.state
+    }
+}
+
+impl gpui_kit::component::dock::BasePanel for PdfSlot {
+    fn panel_name(&self) -> &'static str {
+        self.state.kind().panel_name()
+    }
+
+    fn visible(&self, cx: &App) -> bool {
+        self.pane_visible(cx)
+    }
+
+    fn closable(&self, cx: &App) -> bool {
+        self.pane_closable(cx)
+    }
+
+    fn set_active(&mut self, active: bool, _window: &mut Window, cx: &mut Context<Self>) {
+        self.state.set_active(active, cx);
+    }
+}
+
+impl gpui_kit::component::dock::Panel for PdfSlot {
+    fn tab_name(&self, _cx: &App) -> Option<SharedString> {
+        Some(self.pane_title().into())
+    }
+
+    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        self.pane_title()
+    }
+
+    fn toolbar_buttons(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Vec<Button>> {
+        Some(vec![self.collapse_button(cx)])
+    }
+}
+
+impl gpui_kit::EventEmitter<gpui_kit::component::dock::PanelEvent> for PdfSlot {}
+
+impl gpui_kit::EventEmitter<PaneEvent> for PdfSlot {}
+
+impl gpui_kit::Focusable for PdfSlot {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.state.focus_handle().clone()
+    }
+}
+
+impl Render for PdfSlot {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        pane_container(SlotKind::Pdf, cx)
+            .flex()
+            .flex_col()
+            .track_focus(self.state.focus_handle())
+            .on_mouse_down(
+                gpui_kit::MouseButton::Left,
+                cx.listener(|this, _, window, cx| this.activate_by_user(window, cx)),
+            )
+            .child(self.pdf.clone())
+    }
+}
+
 /// Hoja Editor del shell: editor real (M1-B) + panel de problemas (M1-D).
 struct EditorSlot {
     state: PaneState,
@@ -1170,6 +1376,7 @@ fn bridge_latex_settings(section: &lsx_core::config::LatexSettings) -> LatexSett
 enum AnyPanel {
     Tree(Entity<TreePanel>),
     Editor(Entity<EditorSlot>),
+    Pdf(Entity<PdfSlot>),
     Placeholder(Entity<PlaceholderPanel>),
 }
 
@@ -1180,6 +1387,9 @@ impl AnyPanel {
                 panel.update(cx, |panel, cx| panel.set_visible(visible, cx));
             }
             AnyPanel::Editor(panel) => {
+                panel.update(cx, |panel, cx| panel.set_visible(visible, cx));
+            }
+            AnyPanel::Pdf(panel) => {
                 panel.update(cx, |panel, cx| panel.set_visible(visible, cx));
             }
             AnyPanel::Placeholder(panel) => {
@@ -1260,6 +1470,9 @@ impl Render for AppRoot {
             .on_action(cx.listener(|this, _: &ToggleTreePane, window, cx| {
                 this.toggle_slot(SlotKind::Tree, window, cx)
             }))
+            .on_action(
+                cx.listener(|this, _: &SyncForward, window, cx| this.sync_forward(window, cx)),
+            )
             .on_action(cx.listener(|this, _: &TogglePdfPane, window, cx| {
                 this.toggle_slot(SlotKind::Pdf, window, cx)
             }))

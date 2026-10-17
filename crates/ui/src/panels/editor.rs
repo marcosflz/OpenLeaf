@@ -470,6 +470,13 @@ impl EditorPanel {
     // --- consultas ----------------------------------------------------------
 
     /// Ruta relativa (con `/`) del documento activo.
+    /// Cursor del documento activo (línea/columna **1-based**) para SyncTeX.
+    pub fn active_cursor(&self, cx: &App) -> Option<(u32, u32)> {
+        let ix = self.active?;
+        let position = self.docs[ix].editor.read(cx).cursor_position();
+        Some((position.line as u32 + 1, position.character as u32 + 1))
+    }
+
     pub fn active_path(&self) -> Option<String> {
         self.active
             .and_then(|ix| self.docs.get(ix))
