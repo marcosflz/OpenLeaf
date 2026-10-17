@@ -58,6 +58,15 @@
 
 **Integración (orchestrator, 2026-10-17)**: ✅ editor real (M1-B) + panel de problemas (M1-D) montados en el shell con wiring completo (watcher→editor, `CompileController`→status/diagnósticos/problemas, `ProblemsEvent::OpenSource`→abrir en editor, `TreeFsEvent`→shell). ✅ **PDF real (M1-C) montado** (commit `d6e70ca`): recarga al compilar con generation, SyncTeX forward (Ctrl+Alt+J) e inverse, preload main.tex+pdf. Evidencia: `shots/m1-integration.png` y `shots/m1-pdf.png` (CV renderizado). Informe C (cancelada al final, implementación completa): `docs/qa/reports/M1-C-pdf.md`. ⏳ Falta el chat (M1-E, ola O3 en marcha).
 
+## O3 — Streams en cola (lanzada 2026-10-17)
+
+| Stream | Territorio | Tareas | Sesión | Estado |
+|---|---|---|---|---|
+| **E** chat IA | `crates/chat/**`, `crates/ui/src/panels/chat.rs`, wiring en `app.rs` | E1..E6 (supervisor prod, reducer, panel Copilot, permisos, fix-with-AI, pickers) | ses_eb5049c0fffeVXs8qCkzA75HM3 | DOING |
+| **F** proyectos/fs | `crates/core/**` (+project), `ui/src/{project,new_project,tree,toolbar}.rs` | F1..F4 (ProjectService en core, tree production events, ops, wizard + plantillas) | ses_eb5049c0effetI9psO009sDCjz | DOING |
+
+Tras O3: **integración final + gates + E2E de 8 pasos → gate G1**.
+
 Gate de salida: **G1** (E2E pasos 1–8 + presupuestos §6.3) — requiere también E/F; el orchestrator integra los paneles en el shell conforme aterrizan.
 | M0-S6 | fs/watcher + tree component | ✅ DONE | informe: `docs/qa/reports/M0-S6-spike-fs.md` · list_dir 5,6 ms/5k · tree sin evento de selección (→ M1-F2) |
 | M0-G0 | Freeze `INTERFACES.md` | TODO | orchestrator, al cerrar S1–S6 — requiere revisión del usuario |
