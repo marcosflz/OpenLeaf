@@ -474,7 +474,7 @@ impl EditorPanel {
     pub fn active_cursor(&self, cx: &App) -> Option<(u32, u32)> {
         let ix = self.active?;
         let position = self.docs[ix].editor.read(cx).cursor_position();
-        Some((position.line as u32 + 1, position.character as u32 + 1))
+        Some((position.line + 1, position.character + 1))
     }
 
     pub fn active_path(&self) -> Option<String> {
