@@ -90,10 +90,9 @@ fn main() {
             let root_for_panel = root.clone();
             gpui_kit::open_window(options, cx, move |window, cx| {
                 let window_handle = window.window_handle();
-                let demo = cx.new(|cx| {
+                cx.new(|cx| {
                     SpikeEditor::new(root_for_panel, window_handle, demo_conflict, window, cx)
-                });
-                demo
+                })
             })
             .expect("no se pudo abrir la ventana del spike M1-B");
         });
@@ -133,7 +132,7 @@ impl SpikeEditor {
         // que había (M1-B1). Después se inyectan siempre los diagnósticos
         // reales del fixture sobre `main.tex` (parse_log → set_diagnostics).
         if panel.read(cx).tab_count() == 0 {
-            let _ = panel.update(cx, |panel, cx| {
+            panel.update(cx, |panel, cx| {
                 panel.open_file("main.tex", None, window, cx);
                 panel.open_file(Path::new("capitulos").join("intro.tex"), None, window, cx);
                 panel.open_file(Path::new("secciones").join("metodo.tex"), None, window, cx);
@@ -141,7 +140,7 @@ impl SpikeEditor {
                 panel.open_file("main.tex", Some(1), window, cx);
             });
         }
-        let _ = panel.update(cx, |panel, cx| {
+        panel.update(cx, |panel, cx| {
             let diags = parse_log(UNDEFINED_LOG);
             panel.set_diagnostics("main.tex", &diags, cx);
         });
@@ -181,7 +180,7 @@ impl SpikeEditor {
                 };
                 let ok = cx
                     .update_window(handle, |_, window, app| {
-                        let _ = panel_for_task.update(app, |panel, cx| {
+                        panel_for_task.update(app, |panel, cx| {
                             panel.apply_fs_batch(batch.clone(), window, cx)
                         });
                         let _ = this.update(app, |shell, cx| {
@@ -210,7 +209,7 @@ impl SpikeEditor {
             let root = root.clone();
             window.defer(cx, move |window, cx| {
                 // 1) el buffer queda sucio; 2) otro editor escribe el archivo.
-                let _ = panel.update(cx, |panel, cx| {
+                panel.update(cx, |panel, cx| {
                     panel.insert_active(
                         "\n% EDITADO EN EL BUFFER (demo conflicto externo)\n",
                         window,
