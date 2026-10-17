@@ -4,6 +4,8 @@
 //! - layout dock serializable `[árbol | editor | pdf | chat]`
 //! - paneles como reducers puros sobre eventos + intents (INTERFACES §8)
 //! - título/toolbar/status bar, notificaciones, modales, command palette
+//! - wizard «Nuevo proyecto» ([`new_project`], M1-F4) y fachada de proyectos
+//!   ([`project`], M1-F1)
 //! - i18n es desde el inicio ([`rust_i18n`], tablas en `locales/es.yml`)
 //!
 //! Arranque típico (`app/src/main.rs`):
@@ -21,6 +23,7 @@
 
 pub mod app;
 pub mod layout;
+pub mod new_project;
 pub mod notifications;
 pub mod palette;
 pub mod panels;

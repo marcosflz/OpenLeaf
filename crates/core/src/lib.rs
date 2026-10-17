@@ -9,10 +9,11 @@
 //!
 //! Regla dura: este crate NO conoce UI, tokio, reqwest ni gpui.
 //!
-//! Estado: M1-A0 — `root`, `config` y `events` implementados y testeados;
-//! `project`/`errors` siguen en el backlog del stream F.
+//! Estado: M1 — `root`, `config`, `events`, `fs` y `project` implementados y
+//! testeados; `errors` sigue en el backlog.
 
 pub mod config;
 pub mod events;
 pub mod fs;
+pub mod project;
 pub mod root;

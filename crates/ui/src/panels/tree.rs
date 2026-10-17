@@ -1,4 +1,4 @@
-//! `TreePanel` — explorador de archivos de producción (M1-A1/F2 seed).
+//! `TreePanel` — explorador de archivos de producción (M1-F2/F3/F4).
 //!
 //! Modelo y estilo vienen del spike M0-S6 **aprobado** (VS Code Explorer):
 //! filas de 22 px, fuente 13 px, iconos de 16 px, toolbar compacto icon-only,
@@ -10,7 +10,16 @@
 //! para caber en una columna del dock.
 //!
 //! El panel nunca escribe fuera de su proyecto: crear/renombrar/borrar pasan
-//! por `FsService`, que valida y usa `write_text_atomic`/rename seguros.
+//! por `FsService`, que valida (`validate_name`) y usa
+//! `write_text_atomic`/rename seguros. Las operaciones piden confirmación con
+//! diálogos del kit y avisan por toast.
+//!
+//! Eventos hacia el shell (M1-F2/F4):
+//! - [`TreePanelEvent::OpenFile`]: doble clic/Enter en un `.tex`/`.pdf` (el
+//!   panel **no** abre nada: emite y el shell decide editor o visor).
+//! - [`TreePanelEvent::ProjectCreated`]: el wizard «Nuevo proyecto» creó un
+//!   proyecto y este panel lo adoptó; el shell puede recordarlo/abrirlo
+//!   ([`AppRoot::open_project`](crate::app::AppRoot)).
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -33,9 +42,10 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
-    Subscription, Task, WeakEntity, Window, div, px,
+    App, AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton,
+    ParentElement as _, Render, SharedString, Styled as _, Subscription, Task, WeakEntity, Window,
+    div, px,
 };
 use lsx_core::fs::{EntryKind, FsEvent, FsService, WatcherGuard};
 
@@ -47,6 +57,28 @@ pub enum TreeFsEvent {
 }
 
 impl gpui_kit::EventEmitter<TreeFsEvent> for TreePanel {}
+
+/// Tipo de archivo abrible con doble clic/Enter (M1-F2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TreeOpenKind {
+    /// Documento LaTeX: lo abre el editor.
+    Tex,
+    /// PDF: lo abre el visor.
+    Pdf,
+}
+
+/// Evento del panel de árbol hacia el shell (M1-F2/F4).
+#[derive(Clone, Debug)]
+pub enum TreePanelEvent {
+    /// Doble clic o Enter sobre un `.tex`/`.pdf`: el shell lo abre en el
+    /// editor o en el visor (el panel no hace I/O fuera de su proyecto).
+    OpenFile { rel: PathBuf, kind: TreeOpenKind },
+    /// El wizard «Nuevo proyecto» creó `project` y el panel lo adoptó: el
+    /// shell debería recordarlo en `settings` y montarlo (editor/PDF root).
+    ProjectCreated { project: ProjectInfo },
+}
+
+impl gpui_kit::EventEmitter<TreePanelEvent> for TreePanel {}
 
 use crate::layout::SlotKind;
 use crate::panels::{Pane, PaneEvent, PaneState, pane_container};
@@ -356,6 +388,105 @@ impl TreePanel {
         }
     }
 
+    // --- apertura de archivos (M1-F2) ---------------------------------------
+
+    /// Entrada seleccionada si es un archivo abrible (`.tex`/`.pdf`).
+    fn selected_openable(&self, cx: &App) -> Option<(PathBuf, TreeOpenKind)> {
+        let entry = self.tree.read(cx).selected_entry()?;
+        if entry.is_folder() {
+            return None;
+        }
+        let id = entry.item().id.to_string();
+        let kind = open_kind(&id)?;
+        Some((PathBuf::from(id), kind))
+    }
+
+    /// Abre (emite) el archivo seleccionado; lo usa la tecla Enter.
+    fn open_selected(&mut self, cx: &mut Context<Self>) {
+        if let Some((rel, kind)) = self.selected_openable(cx) {
+            self.emit_open(rel, kind, cx);
+        }
+    }
+
+    /// Emite `TreePanelEvent::OpenFile` (doble clic en fila o Enter).
+    fn emit_open(&mut self, rel: PathBuf, kind: TreeOpenKind, cx: &mut Context<Self>) {
+        self.last_action =
+            rust_i18n::t!("ui.app.tree.opening", name = rel.display().to_string()).to_string();
+        cx.emit(TreePanelEvent::OpenFile { rel, kind });
+        cx.notify();
+    }
+
+    /// Contrae todas las carpetas del árbol (la raíz queda expandida).
+    fn collapse_all(&mut self, cx: &mut Context<Self>) {
+        self.expanded.clear();
+        self.rebuild_tree(cx);
+        self.last_action = rust_i18n::t!("ui.app.tree.collapsed").to_string();
+        cx.notify();
+    }
+
+    // --- nuevo proyecto (M1-F4) ---------------------------------------------
+
+    /// Carpeta padre propuesta al wizard: sube por los ancestros hasta
+    /// encontrar la `workspace/` de la que cuelga el proyecto (p. ej.
+    /// `workspace\cv\sub` → `workspace\`); si no hay ninguna, propone la
+    /// carpeta padre del proyecto.
+    fn wizard_parent(&self) -> Option<PathBuf> {
+        let root = self.project.as_ref()?.root.clone();
+        if let Some(workspace) = root.ancestors().skip(1).find(|dir| {
+            dir.file_name()
+                .is_some_and(|name| name.eq_ignore_ascii_case("workspace"))
+        }) {
+            return Some(workspace.to_path_buf());
+        }
+        if root
+            .file_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case("workspace"))
+        {
+            return Some(root);
+        }
+        root.parent().map(Path::to_path_buf)
+    }
+
+    /// Abre el wizard «Nuevo proyecto» (M1-F4) con destino por defecto.
+    fn open_new_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(parent) = self.wizard_parent() else {
+            return;
+        };
+        let weak = cx.weak_entity();
+        crate::new_project::open_new_project_dialog(
+            window,
+            cx,
+            crate::new_project::NewProjectDialogConfig {
+                default_parent: parent,
+            },
+            move |project, window, cx| {
+                let _ = weak.update(cx, |panel, cx| {
+                    panel.on_project_created(project, window, cx);
+                });
+            },
+        );
+    }
+
+    /// El wizard creó un proyecto: el panel lo adopta y el shell lo sincroniza
+    /// vía [`TreePanelEvent::ProjectCreated`].
+    fn on_project_created(
+        &mut self,
+        project: ProjectInfo,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let name = project.name.clone();
+        self.set_project(project.clone(), cx);
+        window.push_notification(
+            Notification::info(
+                rust_i18n::t!("ui.app.new_project.created", name = name).to_string(),
+            ),
+            cx,
+        );
+        cx.emit(TreePanelEvent::ProjectCreated { project });
+        cx.notify();
+    }
+
     // --- eventos del watcher ----------------------------------------------
 
     fn on_fs_batch(&mut self, batch: Vec<FsEvent>, cx: &mut Context<Self>) {
@@ -390,7 +521,13 @@ impl TreePanel {
             "{} · {created}+ · {modified}~ · {removed}- · {renamed}>",
             batch.len()
         );
-        self.rebuild_tree(cx);
+        // Refresco selectivo (M1-F2): el modelo solo cambia con altas/bajas de
+        // entradas visibles. Renombrar/copiar dentro del árbol sí; recompilar
+        // (Modified de .pdf/.aux/.log) no toca lo que se pinta.
+        if self.project.is_some() && batch_changes_model(&batch) {
+            self.rebuild_tree(cx);
+        }
+        cx.notify();
     }
 
     fn push_log(&mut self, line: String) {
@@ -484,6 +621,12 @@ impl TreePanel {
             );
             return false;
         }
+        // Validación Windows explícita antes de tocar el disco (M1-F3): el
+        // `FsService` la repite, pero así el error se explica en el diálogo.
+        if let Err(err) = lsx_core::fs::validate_name(name) {
+            self.notify_error(err.to_string(), window, cx);
+            return false;
+        }
         let Some(fs) = &self.fs else {
             return true;
         };
@@ -496,6 +639,12 @@ impl TreePanel {
             Ok(()) => {
                 self.last_action = format!("creado «{name}»");
                 self.rebuild_tree(cx);
+                window.push_notification(
+                    Notification::info(
+                        rust_i18n::t!("ui.app.tree.toast_created", name = name).to_string(),
+                    ),
+                    cx,
+                );
                 cx.notify();
                 true
             }
@@ -576,6 +725,10 @@ impl TreePanel {
             );
             return false;
         }
+        if let Err(err) = lsx_core::fs::validate_name(new_name) {
+            self.notify_error(err.to_string(), window, cx);
+            return false;
+        }
         let Some(fs) = &self.fs else {
             return true;
         };
@@ -584,6 +737,14 @@ impl TreePanel {
             Ok(()) => {
                 self.last_action = format!("renombrado a «{new_name}»");
                 self.rebuild_tree(cx);
+                // Si el archivo estaba abierto en el editor, el watcher le
+                // avisa del cambio; aquí solo confirmamos en el árbol.
+                window.push_notification(
+                    Notification::info(
+                        rust_i18n::t!("ui.app.tree.toast_renamed", name = new_name).to_string(),
+                    ),
+                    cx,
+                );
                 cx.notify();
                 true
             }
@@ -614,26 +775,35 @@ impl TreePanel {
         }
         .to_string();
         let confirm = rust_i18n::t!("ui.app.tree.delete_confirm").to_string();
+        let cancel = rust_i18n::t!("ui.app.tree.cancel").to_string();
         let weak = cx.weak_entity();
         window.open_alert_dialog(cx, move |alert, _, _| {
             let weak = weak.clone();
             let id = id.clone();
+            let name = name.clone();
             alert
                 .title(title.clone())
                 .description(description.clone())
                 .confirm()
                 .ok_text(confirm.clone())
+                .cancel_text(cancel.clone())
                 .ok_variant(ButtonVariant::Danger)
                 .on_ok(move |_, window, cx| {
                     weak.update(cx, |view, view_cx| {
-                        view.perform_delete(&id, window, view_cx)
+                        view.perform_delete(&id, &name, window, view_cx)
                     })
                     .unwrap_or(true)
                 })
         });
     }
 
-    fn perform_delete(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    fn perform_delete(
+        &mut self,
+        id: &str,
+        name: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let Some(fs) = &self.fs else {
             return true;
         };
@@ -641,6 +811,14 @@ impl TreePanel {
             Ok(()) => {
                 self.last_action = format!("borrado «{id}»");
                 self.rebuild_tree(cx);
+                // Si el archivo estaba abierto, el editor reacciona por su
+                // watcher (conflicto/cierre); aquí solo confirmamos.
+                window.push_notification(
+                    Notification::info(
+                        rust_i18n::t!("ui.app.tree.toast_deleted", name = name).to_string(),
+                    ),
+                    cx,
+                );
                 cx.notify();
                 true
             }
@@ -672,7 +850,8 @@ impl TreePanel {
     // --- render ------------------------------------------------------------
 
     /// Encabezado de sección estilo VS Code: etiqueta de 11 px versalitas a la
-    /// izquierda y acciones solo-icono de 24 px a la derecha.
+    /// izquierda (se trunca si la columna es estrecha) y acciones solo-icono
+    /// de 24 px a la derecha.
     fn render_section_header(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         h_flex()
             .flex_none()
@@ -682,12 +861,14 @@ impl TreePanel {
             .items_center()
             .child(
                 div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
                     .text_size(px(11.))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(cx.theme().muted_foreground)
                     .child(rust_i18n::t!("ui.app.tree.header").to_string()),
             )
-            .child(div().flex_1())
             .child(header_action(
                 cx,
                 "tree-new-file",
@@ -714,6 +895,13 @@ impl TreePanel {
                 IconName::RefreshCw,
                 &rust_i18n::t!("ui.app.tree.refresh"),
                 cx.listener(|this, _, _, cx| this.refresh(cx)),
+            ))
+            .child(header_action(
+                cx,
+                "tree-collapse-all",
+                IconName::ListCollapse,
+                &rust_i18n::t!("ui.app.tree.collapse_all"),
+                cx.listener(|this, _, _, cx| this.collapse_all(cx)),
             ))
             .child(header_action(
                 cx,
@@ -944,7 +1132,8 @@ impl Render for TreePanel {
             return pane_container(SlotKind::Tree, cx).child(self.render_no_project(cx));
         }
 
-        let tree_element = tree(&self.tree, |_ix, entry, selected, _window, cx| {
+        let weak_rows = weak.clone();
+        let tree_element = tree(&self.tree, move |_ix, entry, selected, _window, cx| {
             let is_dir = entry.is_folder();
             let expanded = entry.is_expanded();
             let label = entry.item().label.clone();
@@ -982,7 +1171,7 @@ impl Render for TreePanel {
                 cx.theme().foreground.opacity(0.85)
             };
 
-            ListItem::new(entry.item().id.clone())
+            let mut item = ListItem::new(entry.item().id.clone())
                 .selected(selected)
                 .h(px(tokens::TREE_ROW_HEIGHT))
                 .py_0()
@@ -1011,7 +1200,26 @@ impl Render for TreePanel {
                                 .text_color(name_color)
                                 .child(label),
                         ),
-                )
+                );
+
+            // Doble clic en `.tex`/`.pdf` = abrir (M1-F2). El panel solo emite
+            // el evento; el shell decide editor o visor.
+            let openable = if is_dir {
+                None
+            } else {
+                open_kind(entry.item().id.as_ref())
+            };
+            if let Some(kind) = openable {
+                let weak = weak_rows.clone();
+                let rel = PathBuf::from(entry.item().id.to_string());
+                item = item.on_click(move |event: &ClickEvent, _window, cx| {
+                    if event.click_count() >= 2 {
+                        let rel = rel.clone();
+                        let _ = weak.update(cx, |panel, cx| panel.emit_open(rel, kind, cx));
+                    }
+                });
+            }
+            item
         })
         .context_menu(move |_ix, entry, menu, _window, _cx| context_menu_for(&weak, entry, menu));
 
@@ -1037,7 +1245,28 @@ impl Render for TreePanel {
                     .bg(cx.theme().background.blend(cx.theme().border.opacity(0.5)))
                     .child(self.render_section_header(cx))
                     .child(self.render_filter())
-                    .child(div().flex_1().min_h_0().child(tree_element)),
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h_0()
+                            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
+                                if is_confirm_key(event) {
+                                    this.open_selected(cx);
+                                }
+                            }))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, window, cx| {
+                                    // El clic dentro de la lista deja el foco en
+                                    // el árbol (flechas ↑/↓ ya funcionan) y no en
+                                    // el contenedor de la hoja.
+                                    cx.stop_propagation();
+                                    cx.emit(PaneEvent::Activated(SlotKind::Tree));
+                                    this.tree.update(cx, |state, cx| state.focus(window, cx));
+                                }),
+                            )
+                            .child(tree_element),
+                    ),
             )
             .children(output)
     }
@@ -1054,6 +1283,17 @@ fn context_menu_for(weak: &WeakEntity<TreePanel>, entry: &TreeEntry, menu: Popup
     let create_in = if is_dir { id.clone() } else { parent_of(&id) };
 
     let mut menu = menu;
+    if is_root {
+        let weak = weak.clone();
+        menu = menu.item(
+            PopupMenuItem::new(rust_i18n::t!("ui.app.tree.menu_new_project").to_string())
+                .icon(IconName::FolderRoot)
+                .on_click(move |_, window, cx| {
+                    let _ = weak.update(cx, |view, view_cx| view.open_new_project(window, view_cx));
+                }),
+        );
+        menu = menu.separator();
+    }
     for (label, icon, kind) in [
         (
             rust_i18n::t!("ui.app.tree.menu_new_file"),
@@ -1141,6 +1381,56 @@ fn name_matches(filter_lower: &str, name: &str) -> bool {
     filter_lower.is_empty() || name.to_lowercase().contains(filter_lower)
 }
 
+/// Clase de archivo abrible según su extensión (M1-F2).
+fn open_kind(name: &str) -> Option<TreeOpenKind> {
+    let ext = name
+        .rsplit_once('.')
+        .map(|(_, ext)| ext.to_ascii_lowercase())
+        .unwrap_or_default();
+    match ext.as_str() {
+        "tex" => Some(TreeOpenKind::Tex),
+        "pdf" => Some(TreeOpenKind::Pdf),
+        _ => None,
+    }
+}
+
+/// ¿Es la tecla «abrir» (Enter sin modificadores)?
+fn is_confirm_key(event: &KeyDownEvent) -> bool {
+    (event.keystroke.key == "enter" || event.keystroke.key == "return")
+        && !event.keystroke.modifiers.modified()
+}
+
+/// ¿Un path relativo del watcher puede aparecer en el árbol?
+///
+/// `list_dir` oculta los artefactos auxiliares de LaTeX y el watcher filtra
+/// los temporales `.lsx-tmp-*`, así que sus altas/bajas no cambian el modelo.
+fn path_visible(rel: &Path) -> bool {
+    rel.file_name().is_some_and(|name| {
+        let name = name.to_string_lossy();
+        !lsx_core::fs::is_aux_artifact(&name) && !name.starts_with(".lsx-tmp-")
+    })
+}
+
+/// ¿El lote del watcher puede cambiar lo que pinta el árbol? (M1-F2)
+///
+/// El árbol solo pinta nombres y estructura:
+/// - `Modified` nunca cambia el modelo (tamaño/fecha no se muestran), así que
+///   recompilar (`.pdf`, `.aux`, `.log`…) no rehace el modelo ni pierde la
+///   selección;
+/// - `Created`/`Removed`/`Renamed` solo cuentan si tocan rutas visibles.
+///
+/// Nota de alcance: `TreeState::set_items` del kit reemplaza el modelo
+/// completo, de modo que un refresco por nodo no es posible hoy; este filtro
+/// es el «incremental» viable sin API nueva del componente (documentado en el
+/// informe del stream F).
+fn batch_changes_model(batch: &[FsEvent]) -> bool {
+    batch.iter().any(|event| match event {
+        FsEvent::Modified(_) => false,
+        FsEvent::Created(path) | FsEvent::Removed(path) => path_visible(path),
+        FsEvent::Renamed(from, to) => path_visible(from) || path_visible(to),
+    })
+}
+
 /// Icono por extensión (catálogo Lucide completo vía `AllAssets`).
 fn file_icon(name: &str) -> IconName {
     let ext = name
@@ -1226,6 +1516,47 @@ mod tests {
         assert!(name_matches("main", "Main.TeX"));
         assert!(name_matches("tex", "main.tex"));
         assert!(!name_matches("bib", "main.tex"));
+    }
+
+    #[test]
+    fn openable_files_are_tex_and_pdf_only() {
+        assert_eq!(open_kind("cv/main.tex"), Some(TreeOpenKind::Tex));
+        assert_eq!(open_kind("MAIN.TeX"), Some(TreeOpenKind::Tex));
+        assert_eq!(open_kind("out/cv.pdf"), Some(TreeOpenKind::Pdf));
+        assert_eq!(open_kind("notas.md"), None);
+        assert_eq!(open_kind("sin-extension"), None);
+    }
+
+    #[test]
+    fn the_watcher_batch_only_rebuilds_for_visible_structural_changes() {
+        // Modificaciones y artefactos auxiliares no cambian el modelo.
+        assert!(!batch_changes_model(&[FsEvent::Modified(PathBuf::from(
+            "main.tex"
+        ))]));
+        assert!(!batch_changes_model(&[FsEvent::Created(PathBuf::from(
+            "main.aux"
+        ))]));
+        assert!(!batch_changes_model(&[FsEvent::Removed(PathBuf::from(
+            "main.log"
+        ))]));
+        assert!(!batch_changes_model(&[FsEvent::Created(PathBuf::from(
+            ".lsx-tmp-abc"
+        ))]));
+        // Altas/bajas visibles sí (incluidas las que llegan junto a ruido).
+        assert!(batch_changes_model(&[FsEvent::Created(PathBuf::from(
+            "seccion.tex"
+        ))]));
+        assert!(batch_changes_model(&[FsEvent::Removed(PathBuf::from(
+            "cap1.tex"
+        ))]));
+        assert!(batch_changes_model(&[
+            FsEvent::Modified(PathBuf::from("main.pdf")),
+            FsEvent::Created(PathBuf::from("figuras/plot.png")),
+        ]));
+        assert!(batch_changes_model(&[FsEvent::Renamed(
+            PathBuf::from("borrador.tex"),
+            PathBuf::from("final.tex"),
+        )]));
     }
 
     #[test]
