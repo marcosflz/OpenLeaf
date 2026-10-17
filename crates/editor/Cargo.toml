@@ -1,0 +1,13 @@
+[package]
+name = "lsx-editor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+lsx-core.workspace = true
+gpui-kit.workspace = true
+camino.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

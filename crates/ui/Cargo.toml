@@ -1,0 +1,15 @@
+[package]
+name = "lsx-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+lsx-core.workspace = true
+lsx-latex.workspace = true
+lsx-pdf.workspace = true
+lsx-chat.workspace = true
+lsx-editor.workspace = true
+gpui-kit.workspace = true
+tracing.workspace = true

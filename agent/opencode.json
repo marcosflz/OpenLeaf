@@ -1,0 +1,36 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "instructions": ["AGENTS.md"],
+  "permission": {
+    "edit": "ask",
+    "bash": {
+      "*": "ask",
+      "latexmk *": "allow",
+      "pdflatex *": "allow",
+      "lualatex *": "allow",
+      "xelatex *": "allow",
+      "biber *": "allow",
+      "bibtex *": "allow",
+      "tlmgr *": "allow",
+      "kpsewhich *": "allow",
+      "texhash*": "allow",
+      "where *": "allow",
+      "rg *": "allow",
+      "grep *": "allow",
+      "git status*": "allow",
+      "git diff*": "allow"
+    }
+  },
+  "provider": {
+    "ollama": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Ollama (local)",
+      "options": {
+        "baseURL": "http://localhost:11434/v1"
+      },
+      "models": {
+        "qwen2.5-coder:7b": { "name": "Qwen2.5 Coder 7B (local)" }
+      }
+    }
+  }
+}

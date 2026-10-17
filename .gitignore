@@ -1,0 +1,49 @@
+# ============================================
+# LaTeX Studio — .gitignore
+# ============================================
+
+# Builds / ensamblado / worktrees
+/target
+/dist
+.worktrees/
+
+# Distribución pesada y legacy (se quedan en disco, no en git)
+/legacy
+/tex
+/agent/opencode.exe
+/agent/auth*.json
+
+# Datos de usuario y secretos
+/workspace
+/config/settings.json
+/config/backups/
+/config/secrets/
+/logs/
+
+# Artefactos LaTeX
+*.aux
+*.log
+!fixtures/**/*.log
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.out
+*.toc
+*.bbl
+*.blg
+*.bcf
+*.run.xml
+*.spl
+*.lof
+*.lot
+*.idx
+*.ind
+*.ilg
+*.nav
+*.snm
+*.vrb
+
+# Sistema
+Thumbs.db
+Desktop.ini
+.DS_Store

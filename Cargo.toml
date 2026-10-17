@@ -1,0 +1,57 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/core",
+  "crates/latex",
+  "crates/pdf",
+  "crates/chat",
+  "crates/editor",
+  "crates/ui",
+  "app",
+  "xtask",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.92"
+
+[workspace.dependencies]
+# --- UI: stack pinneado (ver docs/plan/INTERFACES.md §5.1) ---
+# gpui-kit pinea gpui-pre =0.3.9 (snapshot zed@93d7456). NO mezclar con `gpui` 0.2.x de crates.io.
+gpui-kit = "=0.7.3"
+
+# --- Núcleo ---
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+camino = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# --- Runtime ---
+tokio = { version = "1", features = ["rt-multi-thread", "process", "time", "sync", "macros"] }
+async-channel = "2"
+
+# --- Dominio (declarados para pinear; se activan por stream) ---
+hayro = "0.8"
+ropey = "1.6"
+notify = "8"
+rfd = "0.17"
+tree-sitter = "0.27"
+reqwest = { version = "0.13", features = ["json", "stream"] }
+similar = "2"
+
+# --- Crates internos ---
+lsx-core = { path = "crates/core" }
+lsx-latex = { path = "crates/latex" }
+lsx-pdf = { path = "crates/pdf" }
+lsx-chat = { path = "crates/chat" }
+lsx-editor = { path = "crates/editor" }
+lsx-ui = { path = "crates/ui" }
+
+[profile.release]
+lto = "thin"
+strip = true
