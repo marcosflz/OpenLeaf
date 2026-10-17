@@ -426,3 +426,11 @@ Fixtures: `fixtures/opencode/events/spike-20261017-123649(. -mini).jsonl` + `fix
 - Tema: `Theme::change(ThemeMode::Dark, None, cx)`; acento con `Theme::update(cx, |t| t.accent = Hsla::from(rgb(0x004C8DFF)))`; tokens vía `ActiveTheme`.
 - `TitleBar::new()` / `TitleBar::window_options()` / `StatusBar::new().left(..).center(..).right(..)`; titlebar OS-native en Windows. `WindowBounds::Maximized(Bounds::default())` (gpui-pre: lleva Bounds, no Option).
 - **QA visual DPI**: capturas DPI-unaware a 200 % parecen 2×/recortadas — no es bug; usar captura DPI-aware o maximizada en los gates.
+
+### M0-S5 — Engine + LogParser + SyncTeX — VERIFICADO (2026-10-17)
+
+- SyncTeX CLI 1.5: `view`/`edit` emiten **bp** con origen arriba-izquierda; `Line` 1-based; `Column:-1` = desconocida; el CLI **siempre exit 0** → pre-validar sidecar (`<pdf>.synctex.gz`) → `NotAvailable`; lista vacía → `NoMatch`; `Input:` con `/./` → normalizar. `view` da N registros + caja `(h, v−H)..(h+W, v)`. Latencia ~50 ms; **CLI suficiente para M1-C4**.
+- **Cambios al contrato §3 (adoptar en el freeze)**: `SourcePoint.column: Option<u32>`; `+ SyncRecord`/`forward_all()` (resaltar con la CAJA, difiere ~3 bp del punto); `Synctex::new(exe)`; `SynctexError::Spawn`; `CompileRequest += out_dir, auto_install`; `CompileOutcome += log, exit_code`; `EngineInfo` ampliado; `TexLivePaths::detect()` (sustituto de `PortableRoot` hasta M1); `CompileQueue` → M1-D2; `LogHint{Progress/Error/Warning/Output{pages,bytes}}`.
+- latexmk `-outdir`: todo al outdir; exit 12 en error TeX; **rerun post-auto-install requiere `-g`** (si no, "up-to-date"); stdout sin %.
+- tlmgr: `.bat` siempre exit 0 → decidir por salida; distro vs tlnet desalineada → `install` con fallback `--force` (implementado); prueba real `adjmulticol` (reinstalado, estado final = inicial).
+- Tests gated reales (`LSX_TEST_TEXLIVE=1` + `LSX_TEST_TLMGR_INSTALL=1`): compile cv 3.38 s, diagnósticos correctos, round-trip synctex 78↔79 (±1).
