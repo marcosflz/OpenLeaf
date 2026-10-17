@@ -26,7 +26,7 @@
 
 | ID | Spike | Estado | Sesión |
 |----|-------|--------|--------|
-| M0-S1 | shell / dock 4 paneles | DOING | ses_eb6356f6fffeSeXbfr5qfSoo72 |
+| M0-S1 | shell / dock 4 paneles | ✅ DONE | informe: `docs/qa/reports/M0-S1-spike-shell.md` · **I-7 resuelto** (dock suficiente, colapso vía `Panel::visible`) |
 | M0-S2 | editor tree-sitter | ✅ DONE | informe: `docs/qa/reports/M0-S2-spike-editor.md` · I-1/I-3 resueltos · fix: `codebook-tree-sitter-latex 0.6.1` + tree-sitter 0.26.13 |
 | M0-S3 | PDF hayro (render + RenderImage) | ✅ DONE | informe: `docs/qa/reports/M0-S3-spike-pdf.md` · I-2 confirmado (visor propio) · p50 4–8 ms release |
 | M0-S4 | chat opencode (REST/SSE + fixtures) | ✅ DONE | informe: `docs/qa/reports/M0-S4-spike-chat.md` · **I-4/I-5 congelados** · fixtures SSE + flujo de permiso grabados |

@@ -417,3 +417,12 @@ Permiso: `permission.asked` → POST `{response}` → `permission.replied` → t
 I-5: instancia global + `POST /session?directory=` por proyecto; `GET /event` global etiquetado por `sessionID`.
 Reconexión: **sin `Last-Event-ID`** → refetch de historial (`GET /session/:id/message?limit=`).
 Fixtures: `fixtures/opencode/events/spike-20261017-123649(. -mini).jsonl` + `fixtures/opencode/README.md`; seeds en `crates/chat/src/events.rs`; replayer `lsx_chat::replay`. Modelo del equipo: `opencode-go/gpt-5.6-luna`.
+
+### M0-S1 — Shell / dock — VERIFICADO (2026-10-17) · **I-7 resuelto**
+
+- Dock: `DockSkin::dock_area(id, version, window, cx)`; `DockLayout::h_split()/v_split()/tabs()` + `.child/panel/panel_view/active_index`; hojas fijas `set_locked(true)`; install `DockArea::set_center(...)`; `panel_handle<P>(..)` obligatorio para títulos.
+- Colapso por hoja: **`Panel::visible(false)`** (el contenedor cede el slot); cualquier cambio debe notificar también al `DockArea` (el panel guarda `WeakEntity<DockArea>`). Dock regions sí tienen `toggle_dock`.
+- Persistencia: (a) `DockArea::dump/load` (`DockAreaState` serde + `register_panel`); (b) esquema §7 `{id, kind, width_fraction, collapsed}` + `focus{hidden, previous_fractions}` con `set_split_sizes`; persistir con debounce de `DockEvent::LayoutChanged` (M1-A1).
+- Tema: `Theme::change(ThemeMode::Dark, None, cx)`; acento con `Theme::update(cx, |t| t.accent = Hsla::from(rgb(0x004C8DFF)))`; tokens vía `ActiveTheme`.
+- `TitleBar::new()` / `TitleBar::window_options()` / `StatusBar::new().left(..).center(..).right(..)`; titlebar OS-native en Windows. `WindowBounds::Maximized(Bounds::default())` (gpui-pre: lleva Bounds, no Option).
+- **QA visual DPI**: capturas DPI-unaware a 200 % parecen 2×/recortadas — no es bug; usar captura DPI-aware o maximizada en los gates.
