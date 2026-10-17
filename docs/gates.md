@@ -34,7 +34,7 @@
 
 | Gate | Fecha | Verdicto | Informe | Pendientes |
 |------|-------|----------|---------|-----------|
-| P0 | — | — | — | — |
+| P0 | 2026-10-17 | ✅ PASS | `docs/qa/reports/P0-2026-10-17.md` | P0.4b remoto+push; `xtask fixtures`; `fixtures/opencode` (S4) |
 | G0 | — | — | — | — |
 | G1 | — | — | — | — |
 | G2 | — | — | — | — |
