@@ -24,6 +24,8 @@
 *.aux
 *.log
 !fixtures/**/*.log
+*.synctex.gz
+!fixtures/**/*.synctex.gz
 *.fls
 *.fdb_latexmk
 *.synctex.gz

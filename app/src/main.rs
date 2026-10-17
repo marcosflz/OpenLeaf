@@ -4,6 +4,7 @@
 //! P0 (este estado): ventana mínima sobre `gpui-kit` para validar el stack.
 //! M1+: wiring de servicios (`lsx-core/latex/pdf/chat`) + dock de 4 paneles.
 
+use gpui_kit::component::button::*;
 use gpui_kit::component::*;
 use gpui_kit::*;
 
