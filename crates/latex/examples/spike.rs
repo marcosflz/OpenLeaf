@@ -182,7 +182,7 @@ fn demo_synctex() {
     req.out_dir = Some(demo.join("out"));
     let events: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
     let on_event = |e: CompileEvent| {
-        if let CompileEvent::Progress { line } = e {
+        if let CompileEvent::Progress { line, .. } = e {
             events.lock().expect("mutex").push(line);
         }
     };

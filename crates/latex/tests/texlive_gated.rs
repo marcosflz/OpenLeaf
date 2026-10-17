@@ -1,4 +1,4 @@
-//! Tests de integración **reales** del motor (spike M0-S5).
+//! Tests de integración **reales** del motor.
 //!
 //! Requieren el TeX Live portable del repo: activar con
 //! `$env:LSX_TEST_TEXLIVE="1"; cargo test -p lsx-latex -- --nocapture`.
@@ -6,15 +6,18 @@
 //!
 //! El test de auto-install (`tlmgr`) además exige `LSX_TEST_TLMGR_INSTALL=1`
 //! porque **modifica** el TeX Live portable (descarga/reinstala un paquete y usa red).
+//!
+//! Cobertura M1-D1: timeout real con un `.tex` que se cuelga, cancelación con
+//! `CancelToken` y verificación de **cero procesos huérfanos** (job objects).
 
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use camino::{Utf8Path, Utf8PathBuf};
 
 use lsx_latex::{
-    CancelToken, CompileEvent, CompileRequest, CompileStatus, DiagnosticKind, LatexEngine, Synctex,
-    TexLiveEngine, Tlmgr,
+    CancelToken, CleanMode, CleanRequest, CompileEvent, CompileRequest, CompileStatus,
+    DiagnosticKind, LatexEngine, Synctex, TexLiveEngine, Tlmgr,
 };
 
 fn fixture_dir(name: &str) -> Utf8PathBuf {
@@ -92,6 +95,49 @@ fn compile(
         .expect("compilación sin errores de proceso")
 }
 
+/// Procesos de TeX/biber cuyo CommandLine menciona `marker` (huérfanos vivos).
+fn tex_processes_with(marker: &str) -> Vec<String> {
+    let script = "\
+$procs = Get-CimInstance Win32_Process | \
+  Where-Object { ($_.Name -in @('pdflatex.exe','perl.exe','latexmk.exe','biber.exe')) -and ($_.CommandLine -like '*MARKER*') }; \
+$procs | ForEach-Object { ([string]$_.ProcessId) + ' ' + $_.Name }"
+        .replace("MARKER", marker);
+    let output = std::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .output()
+        .expect("powershell para inspeccionar procesos");
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Falla si tras `grace` sigue habiendo procesos del árbol de esa compilación.
+fn assert_no_orphans(marker: &str, grace: Duration) {
+    let deadline = Instant::now() + grace;
+    loop {
+        let alive = tex_processes_with(marker);
+        if alive.is_empty() {
+            return;
+        }
+        if Instant::now() >= deadline {
+            panic!("procesos huérfanos del motor: {alive:?}");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// `.tex` que se cuelga de verdad: bucle infinito de TeX (no produce salida).
+///
+/// Nota real medida: `\typein` con `stdin = NUL` (lo que usa el motor) NO se
+/// cuelga — TeX recibe EOF y muere con «Emergency stop (cannot \read from
+/// terminal in nonstop modes)» en ~2 s. Para ejercitar el timeout hace falta un
+/// cuelgue sin E/S: `\loop\iftrue\repeat`.
+const HANG_TEX: &str =
+    "\\documentclass{article}\n\\begin{document}\n\\loop\\iftrue\\repeat\n\\end{document}\n";
+
 #[test]
 fn probe_detecta_latexmk_y_version() {
     if !gated() {
@@ -163,13 +209,21 @@ fn compila_cv_en_temp_con_outdir() {
         .map(|e| e.expect("entrada").file_name())
         .collect();
     assert_eq!(src_files.len(), 1, "src ensuciado: {src_files:?}");
-    // Eventos: Started + Progress + Finished.
+    // El engine suelto solo emite `Progress`/`PackageInstall` (generation 0);
+    // el ciclo de vida lo emite el CompileQueue (M1-D2).
     let events = events.into_inner().expect("mutex");
-    assert!(matches!(events.first(), Some(CompileEvent::Started { .. })));
-    assert!(events
-        .iter()
-        .any(|e| matches!(e, CompileEvent::Progress { line } if line.contains("Latexmk:") || line.contains("Output written"))));
-    assert!(matches!(events.last(), Some(CompileEvent::Finished { .. })));
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, CompileEvent::Progress { line, .. }
+            if line.contains("Latexmk:") || line.contains("Output written")))
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, CompileEvent::Finished { .. })),
+        "el engine no emite Finished: {events:#?}"
+    );
 
     // Segunda pasada con `clean = true` (latexmk -C + rebuild) sobre el mismo outdir.
     let mut req = CompileRequest::new(&src, src.join("main.tex"));
@@ -237,10 +291,135 @@ fn broken_missingpkg_reporta_el_paquete() {
     assert_eq!(outcome.status, CompileStatus::Failed);
     assert!(outcome.pdf.is_none(), "no debe haber PDF");
     assert!(outcome.package_installs.is_empty(), "auto_install apagado");
-    assert!(outcome.diagnostics.iter().any(|d| matches!(
-        &d.kind,
-        DiagnosticKind::MissingPackage { package } if package == "estepaquete-quenoexiste"
-    )));
+    let missing = outcome
+        .diagnostics
+        .iter()
+        .find(|d| matches!(&d.kind, DiagnosticKind::MissingPackage { package } if package == "estepaquete-quenoexiste"))
+        .unwrap_or_else(|| panic!("sin MissingPackage en {:#?}", outcome.diagnostics));
+    // M1-D3: el error ! sin archivo:línea se correlaciona con `(./main.tex` y `l.4`.
+    assert_eq!(
+        missing.file.as_ref().and_then(|f| f.file_name()),
+        Some("main.tex"),
+        "{missing:#?}"
+    );
+    assert_eq!(missing.line, Some(4), "{missing:#?}");
+}
+
+#[test]
+fn timeout_mata_el_arbol_sin_huerfanos() {
+    if !gated() {
+        eprintln!("skip: define LSX_TEST_TEXLIVE=1");
+        return;
+    }
+    let marker = format!("lsx-s5\\timeout-{}", std::process::id());
+    let tmp = TempDir::new(&format!("timeout-{}", std::process::id()));
+    let src = tmp.path().join("src");
+    std::fs::create_dir_all(&src).expect("src");
+    std::fs::write(src.join("main.tex"), HANG_TEX).expect("proyecto colgado");
+
+    let engine = engine();
+    let mut req = CompileRequest::new(&src, src.join("main.tex"));
+    req.out_dir = Some(tmp.path().join("out"));
+    req.timeout = Duration::from_secs(10);
+
+    let started = Instant::now();
+    let outcome = engine
+        .compile(&req, &(|_| {}), &CancelToken::new())
+        .expect("el timeout no debe ser un error de proceso");
+    let elapsed = started.elapsed();
+    eprintln!("[timeout] status={:?} elapsed={elapsed:?}", outcome.status);
+    assert_eq!(outcome.status, CompileStatus::Timeout, "{outcome:?}");
+    assert!(elapsed >= req.timeout, "no esperó al timeout: {elapsed:?}");
+    assert!(
+        elapsed < req.timeout + Duration::from_secs(5),
+        "kill lento: {elapsed:?}"
+    );
+    assert_no_orphans(&marker, Duration::from_secs(5));
+}
+
+#[test]
+fn cancel_token_mata_la_compilacion_en_curso() {
+    if !gated() {
+        eprintln!("skip: define LSX_TEST_TEXLIVE=1");
+        return;
+    }
+    let marker = format!("lsx-s5\\cancel-{}", std::process::id());
+    let tmp = TempDir::new(&format!("cancel-{}", std::process::id()));
+    let src = tmp.path().join("src");
+    std::fs::create_dir_all(&src).expect("src");
+    std::fs::write(src.join("main.tex"), HANG_TEX).expect("proyecto colgado");
+
+    let engine = engine();
+    let mut req = CompileRequest::new(&src, src.join("main.tex"));
+    req.out_dir = Some(tmp.path().join("out"));
+    req.timeout = Duration::from_secs(120);
+    let token = CancelToken::new();
+    let cancel_from_thread = token.clone();
+
+    let started = Instant::now();
+    let worker = std::thread::spawn(move || {
+        engine
+            .compile(&req, &(|_| {}), &token)
+            .expect("compilación cancelable")
+    });
+    std::thread::sleep(Duration::from_millis(1500));
+    cancel_from_thread.cancel();
+    let outcome = worker.join().expect("join del worker");
+    let elapsed = started.elapsed();
+    eprintln!("[cancel] status={:?} elapsed={elapsed:?}", outcome.status);
+    assert_eq!(outcome.status, CompileStatus::Cancelled, "{outcome:?}");
+    assert!(
+        elapsed < Duration::from_secs(7),
+        "la cancelación tardó {elapsed:?}"
+    );
+    assert_no_orphans(&marker, Duration::from_secs(5));
+}
+
+#[test]
+fn limpiar_auxiliares_conserva_el_pdf() {
+    if !gated() {
+        eprintln!("skip: define LSX_TEST_TEXLIVE=1");
+        return;
+    }
+    let tmp = TempDir::new("test-clean");
+    let src = tmp.path().join("src");
+    stage_project("cv", &src);
+    let out_dir = tmp.path().join("out");
+
+    let engine = engine();
+    let events = Mutex::new(Vec::new());
+    let outcome = compile(&engine, &src, false, &events);
+    assert_eq!(
+        outcome.status,
+        CompileStatus::Success,
+        "{}",
+        outcome.log_tail
+    );
+    let pdf = out_dir.join("main.pdf");
+    let aux = out_dir.join("main.aux");
+    assert!(pdf.is_file(), "pdf antes de limpiar");
+    assert!(aux.is_file(), "aux antes de limpiar");
+
+    let report = engine
+        .clean(&CleanRequest {
+            project: src.clone(),
+            main: src.join("main.tex"),
+            out_dir: Some(out_dir.clone()),
+            mode: CleanMode::Auxiliaries,
+        })
+        .expect("latexmk -c");
+    eprintln!(
+        "[clean] eliminados={:?} tail={:?}",
+        report.removed.len(),
+        report.output_tail.lines().last()
+    );
+    assert!(!aux.exists(), "main.aux debería haberse eliminado");
+    assert!(pdf.is_file(), "latexmk -c debe conservar el PDF");
+    assert!(
+        report.removed.iter().any(|p| p.as_str().ends_with(".aux")),
+        "{:#?}",
+        report.removed
+    );
 }
 
 #[test]
@@ -363,4 +542,28 @@ fn tlmgr_autoinstall_repara_paquete_ausente() {
     );
     assert!(second.pdf.as_ref().is_some_and(|p| p.is_file()));
     assert!(tlmgr.is_installed(package).expect("is_installed"));
+    // M1-D4: el banner recibe eventos tipados `PackageInstall` con la fase.
+    let events = events.into_inner().expect("mutex");
+    let install_events: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            CompileEvent::PackageInstall { package, stage, .. } => Some((package.clone(), *stage)),
+            _ => None,
+        })
+        .collect();
+    eprintln!("[tlmgr] eventos PackageInstall: {install_events:?}");
+    assert!(
+        install_events
+            .iter()
+            .any(|(name, stage)| name == package
+                && *stage == lsx_latex::PackageInstallStage::Started),
+        "{install_events:?}"
+    );
+    assert!(
+        install_events
+            .iter()
+            .any(|(name, stage)| name == package
+                && *stage == lsx_latex::PackageInstallStage::Installed),
+        "{install_events:?}"
+    );
 }

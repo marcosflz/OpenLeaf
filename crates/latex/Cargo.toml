@@ -8,6 +8,21 @@ rust-version.workspace = true
 [dependencies]
 lsx-core.workspace = true
 serde.workspace = true
-camino.workspace = true
+camino = { workspace = true, features = ["serde1"] }
 thiserror.workspace = true
 tracing.workspace = true
+async-channel.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+# Job objects con kill-on-close (M1-D1): la app cierra el handle al morir y
+# Windows mata el árbol latexmk/perl/pdflatex. `Win32_System_Threading` hace
+# falta porque `JOBOBJECT_EXTENDED_LIMIT_INFORMATION` incluye `IO_COUNTERS`.
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_System_JobObjects",
+  "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+serde_json.workspace = true

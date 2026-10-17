@@ -38,6 +38,19 @@ fn missing_package_log_detalla_el_paquete() {
         }
     );
     assert_eq!(missing[0].severity, DiagnosticSeverity::Error);
+    // M1-D3: el `!` sin `archivo:línea:` se correlaciona con el stack `(./main.tex`
+    // y el contexto `l.4` del propio log.
+    assert_eq!(
+        missing[0].file.as_deref().and_then(|f| f.file_name()),
+        Some("main.tex"),
+        "{:#?}",
+        missing[0]
+    );
+    assert_eq!(missing[0].line, Some(4), "{:#?}", missing[0]);
+    // El bloque estable cruza el blanco («Type X to quit…») y se corta en el
+    // siguiente error (`Emergency stop`).
+    assert!(missing[0].raw_block.contains("Type X to quit"));
+    assert!(!missing[0].raw_block.contains("Emergency stop"));
     // El resto del log (Emergency stop / fatal) también es error severo.
     assert!(
         diagnostics
@@ -81,7 +94,38 @@ fn logs_ok_sin_errores_severos() {
             .filter(|d| d.severity == DiagnosticSeverity::Error)
             .collect();
         assert!(errors.is_empty(), "{name} produjo errores: {errors:#?}");
+        // M1-D3: los Info de fuentes/paquetes existen pero nunca como warning.
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.severity == DiagnosticSeverity::Info),
+            "{name} sin diagnósticos Info: {diagnostics:#?}"
+        );
+        assert!(
+            !diagnostics.iter().any(|d| {
+                d.severity == DiagnosticSeverity::Warning && d.message.contains("Info:")
+            }),
+            "{name} coló un Info como warning"
+        );
     }
+}
+
+#[test]
+fn undefined_command_log_trae_bloque_multilinea_estable() {
+    let Some(log) = read_fixture("undefined-command.log") else {
+        return;
+    };
+    let diagnostics = parse_log(&log);
+    let target = diagnostics
+        .iter()
+        .find(|d| {
+            d.line == Some(4) && d.file.as_ref().and_then(|f| f.file_name()) == Some("main.tex")
+        })
+        .expect("diagnóstico main.tex:4");
+    // El bloque se lleva las líneas de contexto del error, no las de memoria.
+    assert!(target.raw_block.contains("l.4 Hola"));
+    assert!(target.raw_block.contains("never \\def'ed"));
+    assert!(!target.raw_block.contains("Here is how much"));
 }
 
 #[test]
