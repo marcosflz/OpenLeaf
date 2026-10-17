@@ -33,11 +33,13 @@ pub enum PaletteCommand {
     OpenProject,
     /// Probar el modal de permiso (demo M1-A4).
     PermissionDemo,
+    /// Crear un proyecto nuevo desde plantilla (M1-F4).
+    NewProject,
 }
 
 impl PaletteCommand {
     /// Orden fijo de la paleta (el índice del item = índice del array).
-    pub const ALL: [PaletteCommand; 10] = [
+    pub const ALL: [PaletteCommand; 11] = [
         PaletteCommand::Compile,
         PaletteCommand::ToggleTree,
         PaletteCommand::ToggleEditor,
@@ -48,6 +50,7 @@ impl PaletteCommand {
         PaletteCommand::ReloadTree,
         PaletteCommand::OpenProject,
         PaletteCommand::PermissionDemo,
+        PaletteCommand::NewProject,
     ];
 
     /// Índice estable dentro de [`PaletteCommand::ALL`].
@@ -63,6 +66,7 @@ impl PaletteCommand {
             PaletteCommand::ReloadTree => 7,
             PaletteCommand::OpenProject => 8,
             PaletteCommand::PermissionDemo => 9,
+            PaletteCommand::NewProject => 10,
         }
     }
 
@@ -84,6 +88,7 @@ impl PaletteCommand {
             PaletteCommand::ReloadTree => rust_i18n::t!("ui.app.palette.reload_tree"),
             PaletteCommand::OpenProject => rust_i18n::t!("ui.app.palette.open_project"),
             PaletteCommand::PermissionDemo => rust_i18n::t!("ui.app.palette.permission_demo"),
+            PaletteCommand::NewProject => rust_i18n::t!("ui.app.palette.new_project"),
         }
         .to_string()
     }
@@ -101,6 +106,7 @@ impl PaletteCommand {
             PaletteCommand::ReloadTree => IconName::RefreshCw,
             PaletteCommand::OpenProject => IconName::FolderOpen,
             PaletteCommand::PermissionDemo => IconName::ShieldCheck,
+            PaletteCommand::NewProject => IconName::FolderPlus,
         }
     }
 
@@ -117,6 +123,7 @@ impl PaletteCommand {
             PaletteCommand::ReloadTree => &["refresh", "recargar", "arbol"],
             PaletteCommand::OpenProject => &["workspace", "carpeta", "proyecto"],
             PaletteCommand::PermissionDemo => &["permiso", "modal", "demo"],
+            PaletteCommand::NewProject => &["nuevo", "proyecto", "plantilla", "crear"],
         }
     }
 

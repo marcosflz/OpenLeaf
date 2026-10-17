@@ -34,9 +34,7 @@ use gpui_kit::component::{
     command::{Command, CommandState},
     dialog::DialogDescription,
     dock::{DockArea, DockEvent, DockLayout, DockPlacement, DockSkin, PanelInfo, panel_handle},
-    h_flex,
-    menu::PopupMenuItem,
-    v_flex,
+    h_flex, v_flex,
 };
 use gpui_kit::{
     App, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
@@ -53,11 +51,12 @@ use lsx_latex::{
 use crate::layout::{FocusMode, ShellLayout, SlotKind};
 use crate::notifications;
 use crate::palette::PaletteCommand;
+use crate::panels::chat::{ChatPanel, ChatPanelConfig};
 use crate::panels::editor::{EditorPanel, EditorPanelConfig, EditorPanelEvent};
 use crate::panels::pdf::{PdfPanel, SyncRect};
 use crate::panels::problems::{ProblemsEvent, ProblemsPanel};
-use crate::panels::tree::TreeFsEvent;
-use crate::panels::{Pane, PaneEvent, PaneState, PlaceholderPanel, TreePanel, pane_container};
+use crate::panels::tree::{TreeFsEvent, TreeOpenKind, TreePanelEvent};
+use crate::panels::{Pane, PaneEvent, PaneState, TreePanel, pane_container};
 use crate::permission::{PermissionCard, PermissionRequest};
 use crate::project::ProjectService;
 use crate::settings_ui;
@@ -124,7 +123,7 @@ pub struct AppRoot {
     pdf: Entity<PdfSlot>,
     pdf_panel: Entity<PdfPanel>,
     last_pdf: Option<PathBuf>,
-    chat: Entity<PlaceholderPanel>,
+    chat: Entity<ChatSlot>,
     problems: Entity<ProblemsPanel>,
     project_root: Option<PathBuf>,
     latex_settings: LatexSettings,
@@ -169,6 +168,7 @@ impl AppRoot {
         let editor_root = project_root
             .clone()
             .unwrap_or_else(|| portable.default_workspace());
+        let chat_root = editor_root.clone();
         let editor_panel = cx.new(|cx| {
             EditorPanel::with_config(
                 editor_root,
@@ -202,7 +202,28 @@ impl AppRoot {
             });
         }
         let pdf = cx.new(|cx| PdfSlot::new(pdf_panel.clone(), Some(dock.downgrade()), cx));
-        let chat = cx.new(|cx| PlaceholderPanel::new(SlotKind::Chat, Some(dock.downgrade()), cx));
+        // Chat real (M1-E3..E6): el panel arranca el supervisor si `ai.autoStart`
+        // (ver `panels::chat`); en modo replay (`LSX_CHAT_REPLAY`) no hay server.
+        let chat_project_name = startup
+            .as_ref()
+            .map(|project| project.name.clone())
+            .unwrap_or_else(|| "LaTeX Studio".to_owned());
+        let chat_panel = cx.new(|cx| {
+            ChatPanel::new(
+                window,
+                cx,
+                ChatPanelConfig::from_root(
+                    &portable,
+                    &chat_root,
+                    chat_project_name,
+                    &settings.ai,
+                    status_handle.clone(),
+                    Some(editor_panel.clone()),
+                    Some(problems.clone()),
+                ),
+            )
+        });
+        let chat = cx.new(|cx| ChatSlot::new(chat_panel, Some(dock.downgrade()), cx));
 
         let mut dock_layout = DockLayout::h_split();
         for kind in SlotKind::ALL {
@@ -338,6 +359,36 @@ impl AppRoot {
                     this.editor_panel.update(cx, |panel, cx| {
                         panel.open_file(rel, Some(*line), window, cx);
                     });
+                },
+            ),
+            cx.subscribe_in(
+                &tree,
+                window,
+                |this, _tree, event: &TreePanelEvent, window, cx| match event {
+                    TreePanelEvent::OpenFile { rel, kind } => {
+                        let abs = this
+                            .project_root
+                            .clone()
+                            .map(|root| root.join(rel))
+                            .unwrap_or_else(|| rel.clone());
+                        match kind {
+                            TreeOpenKind::Tex => {
+                                this.editor_panel.update(cx, |panel, cx| {
+                                    panel.open_path(abs, None, window, cx);
+                                });
+                            }
+                            TreeOpenKind::Pdf => {
+                                this.last_pdf = Some(abs.clone());
+                                this.pdf_panel.update(cx, |panel, cx| {
+                                    panel.set_document(abs, 1, cx);
+                                });
+                            }
+                        }
+                    }
+                    TreePanelEvent::ProjectCreated { project } => {
+                        let root = project.root.clone();
+                        this.open_project(root, window, cx);
+                    }
                 },
             ),
         ];
@@ -477,7 +528,7 @@ impl AppRoot {
             SlotKind::Tree => AnyPanel::Tree(self.tree.clone()),
             SlotKind::Editor => AnyPanel::Editor(self.editor.clone()),
             SlotKind::Pdf => AnyPanel::Pdf(self.pdf.clone()),
-            SlotKind::Chat => AnyPanel::Placeholder(self.chat.clone()),
+            SlotKind::Chat => AnyPanel::Chat(self.chat.clone()),
         }
     }
 
@@ -696,6 +747,25 @@ impl AppRoot {
                 )
                 .child(body)
         });
+    }
+
+    /// Abre el wizard «Nuevo proyecto» (M1-F4).
+    pub fn open_new_project_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let weak = cx.weak_entity();
+        let parent = self.project.workspace().to_path_buf();
+        crate::new_project::open_new_project_dialog(
+            window,
+            cx,
+            crate::new_project::NewProjectDialogConfig {
+                default_parent: parent,
+            },
+            move |project, window, cx| {
+                let path = project.root.clone();
+                let _ = weak.update(cx, |root, cx| {
+                    root.open_project(path, window, cx);
+                });
+            },
+        );
     }
 
     /// Abre un proyecto y lo recuerda en `settings.project`.
@@ -962,6 +1032,7 @@ impl AppRoot {
                 cx.notify();
             }
             PaletteCommand::OpenProject => self.open_project_dialog(window, cx),
+            PaletteCommand::NewProject => self.open_new_project_dialog(window, cx),
             PaletteCommand::PermissionDemo => self.demo_permission(window, cx),
         }
     }
@@ -1060,40 +1131,40 @@ impl AppRoot {
             .tooltip(rust_i18n::t!("ui.app.toolbar.open_folder").to_string())
             .on_click(cx.listener(|this, _, window, cx| this.open_project_dialog(window, cx)));
 
-        let mut project_menu = DropdownButton::new("toolbar-project-menu").button(project_button);
-        project_menu = project_menu.dropdown_menu(move |mut menu, _window, _cx| {
-            menu = menu.item(
-                PopupMenuItem::new(rust_i18n::t!("ui.app.toolbar.open_folder").to_string())
-                    .icon(IconName::FolderOpen)
-                    .on_click({
+        let project_menu = DropdownButton::new("toolbar-project-menu")
+            .button(project_button)
+            .dropdown_menu(move |menu, window, cx| {
+                let callbacks = toolbar::ProjectMenuCallbacks::new(
+                    {
                         let weak = weak.clone();
-                        move |_, window, cx| {
+                        move |window, cx| {
                             let _ =
                                 weak.update(cx, |root, cx| root.open_project_dialog(window, cx));
                         }
-                    }),
-            );
-            if !recents.is_empty() {
-                menu = menu.separator().item(
-                    PopupMenuItem::new(rust_i18n::t!("ui.app.toolbar.recents").to_string())
-                        .disabled(true),
+                    },
+                    {
+                        let weak = weak.clone();
+                        move |window, cx| {
+                            let _ = weak
+                                .update(cx, |root, cx| root.open_new_project_dialog(window, cx));
+                        }
+                    },
+                    {
+                        let weak = weak.clone();
+                        move |path, window, cx| {
+                            let _ = weak.update(cx, |root, cx| root.open_project(path, window, cx));
+                        }
+                    },
                 );
-                for info in &recents {
-                    let weak = weak.clone();
-                    let path = info.root.clone();
-                    let is_current = current_root.as_deref() == Some(path.as_path());
-                    let mut item = PopupMenuItem::new(info.name.clone())
-                        .icon(IconName::FolderClosed)
-                        .checked(is_current);
-                    item = item.on_click(move |_, window, cx| {
-                        let path = path.clone();
-                        let _ = weak.update(cx, |root, cx| root.open_project(path, window, cx));
-                    });
-                    menu = menu.item(item);
-                }
-            }
-            menu
-        });
+                toolbar::project_menu(
+                    window,
+                    cx,
+                    menu,
+                    &recents,
+                    current_root.as_deref(),
+                    callbacks,
+                )
+            });
 
         let mut toggles = h_flex().items_center().gap_1();
         for kind in SlotKind::ALL {
@@ -1263,6 +1334,100 @@ impl Render for PdfSlot {
     }
 }
 
+/// Hoja Chat del shell: panel de chat real (M1-E) con el chrome del contrato
+/// `Pane` (mismo patrón que `PdfSlot`).
+struct ChatSlot {
+    state: PaneState,
+    chat: Entity<ChatPanel>,
+}
+
+impl ChatSlot {
+    fn new(
+        chat: Entity<ChatPanel>,
+        dock_area: Option<WeakEntity<DockArea>>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self {
+            state: PaneState::new(SlotKind::Chat, dock_area, cx),
+            chat,
+        }
+    }
+
+    fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        self.state.set_visible(visible, cx);
+    }
+}
+
+impl Pane for ChatSlot {
+    fn pane_state(&self) -> &PaneState {
+        &self.state
+    }
+
+    fn pane_state_mut(&mut self) -> &mut PaneState {
+        &mut self.state
+    }
+}
+
+impl gpui_kit::component::dock::BasePanel for ChatSlot {
+    fn panel_name(&self) -> &'static str {
+        self.state.kind().panel_name()
+    }
+
+    fn visible(&self, cx: &App) -> bool {
+        self.pane_visible(cx)
+    }
+
+    fn closable(&self, cx: &App) -> bool {
+        self.pane_closable(cx)
+    }
+
+    fn set_active(&mut self, active: bool, _window: &mut Window, cx: &mut Context<Self>) {
+        self.state.set_active(active, cx);
+    }
+}
+
+impl gpui_kit::component::dock::Panel for ChatSlot {
+    fn tab_name(&self, _cx: &App) -> Option<SharedString> {
+        Some(self.pane_title().into())
+    }
+
+    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        self.pane_title()
+    }
+
+    fn toolbar_buttons(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Vec<Button>> {
+        Some(vec![self.collapse_button(cx)])
+    }
+}
+
+impl gpui_kit::EventEmitter<gpui_kit::component::dock::PanelEvent> for ChatSlot {}
+
+impl gpui_kit::EventEmitter<PaneEvent> for ChatSlot {}
+
+impl gpui_kit::Focusable for ChatSlot {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.state.focus_handle().clone()
+    }
+}
+
+impl Render for ChatSlot {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        pane_container(SlotKind::Chat, cx)
+            .flex()
+            .flex_col()
+            .track_focus(self.state.focus_handle())
+            .on_mouse_down(
+                gpui_kit::MouseButton::Left,
+                cx.listener(|this, _, window, cx| this.activate_by_user(window, cx)),
+            )
+            .child(self.chat.clone())
+    }
+}
+
 /// Hoja Editor del shell: editor real (M1-B) + panel de problemas (M1-D).
 struct EditorSlot {
     state: PaneState,
@@ -1377,7 +1542,7 @@ enum AnyPanel {
     Tree(Entity<TreePanel>),
     Editor(Entity<EditorSlot>),
     Pdf(Entity<PdfSlot>),
-    Placeholder(Entity<PlaceholderPanel>),
+    Chat(Entity<ChatSlot>),
 }
 
 impl AnyPanel {
@@ -1392,7 +1557,7 @@ impl AnyPanel {
             AnyPanel::Pdf(panel) => {
                 panel.update(cx, |panel, cx| panel.set_visible(visible, cx));
             }
-            AnyPanel::Placeholder(panel) => {
+            AnyPanel::Chat(panel) => {
                 panel.update(cx, |panel, cx| panel.set_visible(visible, cx));
             }
         }
