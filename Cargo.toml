@@ -40,12 +40,15 @@ hayro = "0.8"
 ropey = "1.6"
 notify = "8"
 rfd = "0.17"
-tree-sitter = "0.27"
+tree-sitter = "0.26"   # pin que usa gpui-component 0.7.3; 0.27 rompe semver 0.x
 reqwest = { version = "0.13", features = ["json", "stream"] }
 similar = "2"
 
 # --- Spikes M0 / utilidades ---
-tree-sitter-latex = "0.1"
+# NOTA (M0-S2): `tree-sitter-latex 0.1` (crates.io) está ROTO (falta scanner.c → LNK2001).
+# `codebook-tree-sitter-latex` es el republish del mismo upstream (latex-lsp/tree-sitter-latex,
+# con scanner y `LANGUAGE: LanguageFn`); en crates/editor se importa con alias `tree-sitter-latex`.
+codebook-tree-sitter-latex = "0.6.1"
 futures = "0.3"
 bytes = "1"
 flate2 = "1"

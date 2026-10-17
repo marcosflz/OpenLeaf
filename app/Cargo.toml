@@ -7,4 +7,19 @@ rust-version.workspace = true
 
 [dependencies]
 lsx-ui.workspace = true
+lsx-pdf.workspace = true
 gpui-kit.workspace = true
+# Solo para el bin de spike M0-S3 (`spike-pdf`): GPUI entrega imágenes como
+# `image::Frame` (RgbaImage) en `RenderImage`; en M1 esto sube a `lsx-ui`.
+image = { version = "0.25", default-features = false }
+# Solo para el bin de spike M0-S6 (`spike-tree`): FsService + watcher + puente
+# de eventos al hilo de UI.
+lsx-core.workspace = true
+async-channel.workspace = true
+# Solo para el bin de spike M0-S4 (`spike-chat`): supervisor de `opencode serve`
+# + cliente REST/SSE + puente async_channel → GPUI.
+lsx-chat.workspace = true
+tokio.workspace = true
+# Solo para el bin de spike M0-S2 (`spike-editor`): editor del kit con
+# tree-sitter-latex, gutter, dirty y guardado sobre copia temporal del fixture.
+lsx-editor.workspace = true
