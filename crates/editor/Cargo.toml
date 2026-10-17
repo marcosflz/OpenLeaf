@@ -7,6 +7,8 @@ rust-version.workspace = true
 
 [dependencies]
 lsx-core.workspace = true
+# M1-B3: diagnósticos inline del `LogParser` (API real de M0-S5, §12).
+lsx-latex.workspace = true
 
 # `tree-sitter-languages` es la feature umbrella de gpui-kit que activa el
 # módulo `component::highlighter` (gpui-component/tree-sitter + gramáticas
@@ -16,6 +18,10 @@ gpui-kit = { workspace = true, features = ["tree-sitter-languages"] }
 camino.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# M1-B2: "ver diff" del conflicto externo (texto simple por ahora).
+similar.workspace = true
 
 # ⚠ M0-S2: gpui-component 0.7.3 compila contra tree-sitter 0.26.13 y su
 # `highlighter::GrammarConfig::new` exige ese `tree_sitter::Language`. El pin
@@ -36,3 +42,8 @@ tree-sitter = "0.26.13"
 # intacto: si el orchestrator decide otro pin (git del monorepo o vendor),
 # solo cambia esta línea.
 tree-sitter-latex = { package = "codebook-tree-sitter-latex", version = "0.6.1" }
+
+[dev-dependencies]
+# Los tests de buscar/reemplazar (M1-B4) y de diagnósticos dirigidos usan el
+# `TestAppContext` del kit (`#[gpui_kit::test]`), que exige `test-support`.
+gpui-kit = { workspace = true, features = ["tree-sitter-languages", "test-support"] }

@@ -51,7 +51,7 @@
 | Stream | Territorio | Tareas | Sesión | Estado |
 |---|---|---|---|---|
 | **A** shell/UX | `crates/ui/**`, `app/src/main.rs`, `app/src/bin/spike-shell.rs`, `lsx-core::{root,config,events}` (M1-A0) | A0 + A1..A6 + integración árbol real | ses_eb5b77d76ffeaY8fTWI6zM9E8E | DOING |
-| **B** editor | `crates/editor/**`, `crates/ui/src/panels/editor.rs`, `app/src/bin/spike-editor.rs` | B1..B5 | ses_eb5b77d74ffexNMHalgSmSMOgq | DOING |
+| **B** editor | `crates/editor/**`, `crates/ui/src/panels/editor.rs`, `app/src/bin/spike-editor.rs` | B1..B5 | ses_eb5b77d74ffexNMHalgSmSMOgq | ✅ **DONE** — 51 tests; pestañas+dirty, guardado atómico+conflictos (modal 3 opciones), diagnósticos inline (squiggle verificado), find/replace (22 casos), autosave+backups+recuperación. Evidencia: `shots/m1-b*.png`. API del panel en su informe |
 | **C** PDF | `crates/pdf/**`, `crates/ui/src/panels/pdf.rs`, `app/src/bin/spike-pdf.rs` | C1..C4 (+ multipage fixture) | ses_eb5b77d73ffeHE0xX4Xi1k4qgJ | DOING |
 | **D** latex | `crates/latex/**`, `crates/ui/src/panels/problems.rs` | D1..D5 | ses_eb5b77d71ffejCS2L6SG3WcPiO | DOING |
 | **E** chat · **F** fs | en cola (O3, tras liberar slot) | M1-E*, M1-F* | — | TODO |

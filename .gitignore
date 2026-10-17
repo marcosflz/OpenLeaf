@@ -17,6 +17,7 @@
 # Datos de usuario y secretos
 /workspace
 /config/settings.json
+/config/editor-session.json
 /config/backups/
 /config/secrets/
 /logs/
