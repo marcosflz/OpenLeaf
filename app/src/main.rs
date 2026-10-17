@@ -28,7 +28,9 @@ fn main() {
         .with_assets(gpui_kit::assets::Assets)
         .run(move |cx| {
             gpui_kit::init(cx);
-            gpui_kit::open_window(WindowOptions::default(), cx, |_, cx| cx.new(|_| LaTeXStudio))
-                .expect("no se pudo abrir la ventana principal");
+            gpui_kit::open_window(WindowOptions::default(), cx, |_, cx| {
+                cx.new(|_| LaTeXStudio)
+            })
+            .expect("no se pudo abrir la ventana principal");
         });
 }
