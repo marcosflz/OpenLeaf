@@ -369,3 +369,13 @@ UI ◄── AppEvent (async_channel) ◄── servicios        ◄── reduc
 - Medidas release (CV Letter 612×792 bp, página 1): p50 ≈ **4.3 / 5.6 / 7.9 ms** a escala 1.0/1.5/2.0 (reuso de cache: 2.2/4.3/6.6). Debug ≈ 91/131/180 ms. Presupuesto <120 ms ✓.
 - Decisión I-2 confirmada: visor propio con `RenderImage`; `gpui-pdf` descartado (GPL + modelo ajeno).
 - Pendiente para fixtures: PDF con `/Rotate` real.
+
+### M0-S6 — FS / watcher / árbol — VERIFICADO (2026-10-17)
+
+- `FsService::new(root)`; `list_dir(rel)` (oculta aux), `list_dir_with(rel, opts)`; `read_text` → `TextFile { text, eol: Lf|CrLf|Mixed, had_bom }`; `write_text_atomic` (temp+fsync+rename con reintentos; UTF-8 sin BOM); `create_file/create_dir/rename/delete`; `watch(on_batch: Fn(Vec<FsEvent>)+Send) -> WatcherGuard` (Drop = stop+join).
+- Callback del watcher por **lote** (`Vec<FsEvent>`), debounce deslizante 200 ms (techo 1 s); paths **relativos** a la raíz del proyecto.
+- Mapeo notify→FsEvent verificado (Windows ReadDirectoryChangesW); temporales `.lsx-tmp-*` se filtran y su rename → `Modified(destino)`.
+- `validate_name` (reservados CON/NUL/COM1.., chars, punto/espacio final); `is_aux_artifact(name)`.
+- `list_dir`: 5,62 ms / 5.000 archivos (margen ~35× sobre M1-F2).
+- Tree del kit: constructor `tree(&Entity<TreeState>, render_item)` + `.context_menu(..)`; eventos SOLO `TreeEvent::Expanded/Collapsed`; selección se lee de `TreeState::selected_entry()` (**M1-F2 necesita evento propio o polling**); `set_items` resetea selección; carpetas vacías requieren placeholder `disabled`; id estable = ruta relativa con `/`.
+- Desviaciones del borrador §2: callback en lote, rutas relativas, constructor con raíz, `rename` no sobreescribe, `FsError` en `fs` (módulo `errors.rs` pendiente).
