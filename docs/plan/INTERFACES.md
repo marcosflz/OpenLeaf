@@ -379,3 +379,12 @@ UI ◄── AppEvent (async_channel) ◄── servicios        ◄── reduc
 - `list_dir`: 5,62 ms / 5.000 archivos (margen ~35× sobre M1-F2).
 - Tree del kit: constructor `tree(&Entity<TreeState>, render_item)` + `.context_menu(..)`; eventos SOLO `TreeEvent::Expanded/Collapsed`; selección se lee de `TreeState::selected_entry()` (**M1-F2 necesita evento propio o polling**); `set_items` resetea selección; carpetas vacías requieren placeholder `disabled`; id estable = ruta relativa con `/`.
 - Desviaciones del borrador §2: callback en lote, rutas relativas, constructor con raíz, `rename` no sobreescribe, `FsError` en `fs` (módulo `errors.rs` pendiente).
+
+### M0-S2 — Editor + tree-sitter — VERIFICADO (2026-10-17)
+
+- **I-1**: registro de lenguajes SÍ (`LanguageRegistry::singleton().register(...)` + `register_parser_factory`); resaltado OK; diagnósticos inline SÍ (`state.diagnostics_mut()` + popover; `lsp_mut()` para providers); **NO hay modelo de archivo/pestañas**: `EditorState` = 1 documento sin path/dirty/save → M1-B1 = `tab::TabBar` + N entidades + dirty vía `InputEvent::Change`. Fallback de spans propios innecesario.
+- **I-3**: buffer = el del componente (`Rope` re-export; ropey 2.0.0-beta.1 interno). ropey directo solo fuera del editor (LogParser), nunca buffer paralelo.
+- **Grammar**: `tree-sitter-latex 0.1.0` (crates.io) **ROTO** (falta `scanner.c` → LNK2001). Adoptado `codebook-tree-sitter-latex = "0.6.1"` (mismo upstream, con scanner, `LANGUAGE: LanguageFn`). Pin `tree-sitter = 0.26.13` (el de gpui-component 0.7.3; 0.27 incompatible 0.x). → actualizar `[workspace.dependencies]` en consolidación (aliased como `tree-sitter-latex`).
+- Query `highlights.scm` propia en `assets/tree-sitter/latex/` (la del plan da 404), validada contra `node-types.json` y compilada en test.
+- Tema Default Dark sin color para `label/operator/punctuation/variable` (TODO M1-A3); captura desconocida → estilo default.
+- `\titleformat{\section}` produce nodo `section` espurio (el outline M1 filtra).
