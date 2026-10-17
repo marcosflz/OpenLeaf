@@ -1,0 +1,99 @@
+% Fixture anonimizado (fixtures/projects/cv) — estructura tipo CV clasico.
+% Datos ficticios: NO contiene informacion personal real.
+% Compilar: latexmk -pdf -synctex=1 -interaction=nonstopmode -file-line-error main.tex
+
+\documentclass[letterpaper,10pt]{article}
+
+\usepackage{latexsym}
+\usepackage[empty]{fullpage}
+\usepackage{titlesec}
+\usepackage{marvosym}
+\usepackage[usenames,dvipsnames]{color}
+\usepackage{verbatim}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{fancyhdr}
+\usepackage[english]{babel}
+\usepackage{tabularx}
+\input{glyphtounicode}
+
+\usepackage[sfdefault]{roboto}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+
+\addtolength{\oddsidemargin}{-0.5in}
+\addtolength{\evensidemargin}{-0.5in}
+\addtolength{\textwidth}{1in}
+\addtolength{\topmargin}{-.5in}
+\addtolength{\textheight}{1.0in}
+
+\urlstyle{same}
+\raggedbottom
+\raggedright
+\setlength{\tabcolsep}{0in}
+
+\titleformat{\section}{\Large\bfseries\scshape\raggedright}{}{0em}{}[\titlerule]
+
+\pdfgentounicode=1
+
+\newcommand{\resumeItem}[1]{\item\small{#1}}
+\newcommand{\resumeSubheading}[4]{
+\vspace{-1pt}\item
+  \begin{tabular*}{0.97\textwidth}[t]{l@{\extracolsep{\fill}}r}
+    \textbf{#1} & #2 \\
+    \textit{#3} & \textit{#4} \\
+  \end{tabular*}\vspace{-7pt}
+}
+\renewcommand\labelitemii{$\vcenter{\hbox{\tiny$\bullet$}}$}
+\newcommand{\resumeSubHeadingList}{\begin{itemize}[leftmargin=0.15in, label={}]}
+\newcommand{\resumeSubHeadingListEnd}{\end{itemize}}
+
+\begin{document}
+
+\begin{center}
+  \textbf{\Huge Alex Rivera} \\[2pt]
+  \small \textbf{Systems Engineer $|$ ML Developer} \\[4pt]
+  \small +00 600 000 000 $|$ \href{mailto:alex.rivera@example.com}{alex.rivera@example.com} \\
+  \small \href{https://example.com/alexrivera}{example.com/alexrivera}
+\end{center}
+
+\section*{Summary}
+Fictional profile used as a test fixture. It exercises common packages (titlesec, tabularx,
+enumitem, hyperref, roboto) so that the compile, log and SyncTeX paths stay realistic.
+
+\section{Technical Skills}
+\resumeSubHeadingList
+  \resumeItem{\textbf{Programming Languages}: Rust, Python, SQL}
+  \resumeItem{\textbf{Cloud \& DevOps}: Docker, MLOps, Data Engineering}
+  \resumeItem{\textbf{Data Science \& AI}: Machine Learning, LLM, AI Agents}
+\resumeSubHeadingListEnd
+
+\section{Experience}
+\resumeSubHeadingList
+  \resumeSubheading
+      {Senior Engineer $|$ Platform}{Jan 2024 -- Present}
+      {Example Corp}{Madrid, Spain}
+      \resumeSubHeadingList
+          \resumeItem{\textbullet\ Led platform migrations across several services.}
+          \resumeItem{\textbullet\ Built tooling for predictive maintenance.}
+      \resumeSubHeadingListEnd
+  \resumeSubheading
+      {Software Engineer}{Jun 2022 -- Dec 2023}
+      {Example Labs}{Le\'on, Spain}
+      \resumeSubHeadingList
+          \resumeItem{\textbullet\ Developed automation for data pipelines.}
+      \resumeSubHeadingListEnd
+\resumeSubHeadingListEnd
+
+\section{Education}
+\resumeSubHeadingList
+  \resumeSubheading
+      {Master's degree in Engineering}{2020 -- 2022}
+      {Example University}{Madrid, Spain}
+\resumeSubHeadingListEnd
+
+\end{document}

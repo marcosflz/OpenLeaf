@@ -1,0 +1,149 @@
+% Fixture anonimizado (fixtures/projects/cv-sidebar) — CV con sidebar, tikz e imagen.
+% Datos ficticios: NO contiene informacion personal real. Imagen: placeholder generado.
+% Compilar: latexmk -pdf -synctex=1 -interaction=nonstopmode -file-line-error main.tex
+
+\documentclass[oneside]{article}
+
+\usepackage{geometry}
+\usepackage[
+    unicode=true,
+    bookmarks=true,
+    bookmarksnumbered=false,
+    bookmarksopen=true,
+    bookmarksopenlevel=1,
+    breaklinks=false,
+    pdfborder={0 0 0},
+    backref=false,
+    colorlinks=false
+]{hyperref}
+\usepackage{lastpage}
+\usepackage{tabularx}
+\usepackage{moresize}
+\usepackage[document]{ragged2e}
+\usepackage[scaled]{helvet}
+\usepackage{fontawesome5}
+\usepackage[defaultfam,tabular,oldstyle]{montserrat}
+\usepackage[T1]{fontenc}
+\usepackage{titlesec}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usepackage{graphicx}
+
+\renewcommand*\oldstylenums[1]{{\fontfamily{Montserrat-TOsF}\selectfont #1}}
+\setlength{\parindent}{0pt}
+\setlength{\fboxrule}{0pt}
+\setlength{\fboxsep}{10pt}
+\setlength{\tabcolsep}{2pt}
+\renewcommand{\arraystretch}{1.25}
+\newcolumntype{Y}{>{\RaggedRight\arraybackslash}X}
+\titlespacing{\section}{0pt}{4.2ex plus .4ex minus .3ex}{.8ex}
+\titleformat{\section}{\normalfont}{}{0pt}{}
+
+\hypersetup{
+    pdftitle={Alex Rivera - CV},
+    pdfauthor={Alex Rivera},
+    pdfsubject={Curriculum Vitae}
+}
+
+\geometry{
+    a4paper,
+    left=0pt,
+    right=0pt,
+    top=0pt,
+    bottom=0pt,
+    nohead,
+    nomarginpar
+}
+
+\definecolor{sidebg}{cmyk}{1, 0.02, 0, 0.56}
+\definecolor{mainbg}{cmyk}{0, 0, 0.07, 0.04}
+\definecolor{maintext}{cmyk}{1, 0.02, 0, 0.8}
+\definecolor{sidetext}{cmyk}{0, 0, 0.07, 0.04}
+\pagecolor{mainbg}
+
+\newcommand{\cvsection}[1]{%
+    \section*{\scshape\large #1 \rule{\linewidth}{0.4pt}}%
+}
+\newcommand{\sidesection}[1]{%
+    \section*{\large #1}%
+}
+
+\begin{document}
+\setlength{\topskip}{1pt}\setlength{\footskip}{0pt}
+
+% -------------------- Sidebar and main column --------------------
+\fcolorbox{red}{sidebg}{%
+    \begin{minipage}[t][\dimexpr\textheight-2\fboxsep-2\fboxrule\relax][t]{\dimexpr0.40\textwidth-2\fboxrule-2\fboxsep\relax}
+        \color{sidetext}
+        {\bfseries\scshape\HUGE Alex}\\[-2pt]
+        {\bfseries\scshape\huge Rivera}
+        \vspace{.2cm}\\
+        Systems Engineer | ML Developer
+
+        \begin{center}
+            \begin{tikzpicture}
+                \clip (0,0) circle (2.4cm) node[anchor=center] {\includegraphics[width=4.8cm]{1.jpeg}};
+            \end{tikzpicture}
+        \end{center}
+
+        \sidesection{Personal info}
+        \begin{tabularx}{\textwidth}{cY}
+            \faCalendar*{} & 01/01/2000 \\
+            \faPhone{} & +00 600 000 000 \\
+            \faEnvelope{} & \href{mailto:alex.rivera@example.com}{alex.rivera@example.com} \\
+            \faLinkedin{} & \href{https://example.com/alexrivera}{/alexrivera} \\
+            \\
+            \multicolumn{2}{@{}p{\textwidth}@{}}{\footnotesize Fictional profile used as a test fixture for LaTeX Studio.} \\
+        \end{tabularx}
+        \vspace{.2cm}\par\rule{\linewidth}{0.4pt}
+
+        \sidesection{Skills}
+        \begin{tabularx}{\textwidth}{cY}
+            \faCode{} & Rust, Python, SQL \\
+            \faCloud{} & Docker, MLOps \\
+            \faBrain{} & Machine Learning, LLM
+        \end{tabularx}
+        \vspace{.2cm}\par\rule{\linewidth}{0.4pt}
+
+        \sidesection{Languages}
+        \begin{tabular}{cl}
+            \faLanguage{} & Spanish (native) \\
+            \faLanguage{} & English (fluent)
+        \end{tabular}
+        \vfill
+    \end{minipage}%
+}%
+\hfill
+\fcolorbox{red}{mainbg}{%
+    \begin{minipage}[t][\dimexpr\textheight-2\fboxrule-2\fboxsep\relax][t]{\dimexpr0.60\textwidth-2\fboxrule-2\fboxsep\relax}
+        \color{maintext}
+        \small
+
+        \cvsection{Summary}
+        {\justifying Fictional summary paragraph for testing layout, fonts and packages of the sidebar template.\par}
+
+        \vspace*{.7cm}
+        \cvsection{Education}
+        {\large \textbf{Master's degree in Engineering}}\\
+        {\scshape\footnotesize Example University \qquad 2020 -- 2022}\\
+
+        \vspace*{.7cm}
+        \cvsection{Experience}
+        {\large \textbf{Senior Engineer | Platform}}\\
+        {\scshape\footnotesize Example Corp, Madrid \qquad 2024 -- Present}\\
+        \begin{itemize}
+            \setlength{\itemsep}{-2pt}
+            \item Led platform migrations across several services.
+            \item Built tooling for predictive maintenance.
+        \end{itemize}
+
+        \cvsection{Conferences}
+        \begin{tabularx}{\linewidth}{lY}
+            -- & ExampleConf 2026 \\
+        \end{tabularx}
+
+        \vfill
+    \end{minipage}%
+}%
+
+\end{document}
