@@ -32,7 +32,7 @@
 | M0-S4 | chat opencode (REST/SSE + fixtures) | ✅ DONE | informe: `docs/qa/reports/M0-S4-spike-chat.md` · **I-4/I-5 congelados** · fixtures SSE + flujo de permiso grabados |
 | M0-S5 | engine latexmk + logparse + synctex | ✅ DONE | informe: `docs/qa/reports/M0-S5-spike-latex.md` · round-trip 78↔79 (±1) · auto-install `adjmulticol` real · hallazgo `-g` post-install |
 
-**Consolidación M0 (2026-10-17)**: commits por spike (`7f9059b` pdf, `d99f6bf` core, `7943980` editor, `e446491` chat, `55e0e4a` ui, +S5); `xtask chat-replay` cableado y deps alineadas (`tree-sitter 0.26` + `codebook-tree-sitter-latex 0.6.1`) en `3430d9f`; **los 6 spikes están DONE**; build release + entrega de `.exe` en curso; gates completos del workspace tras el build; luego **G0** (revisión con el usuario).
+**Consolidación M0 (2026-10-17)**: commits por spike (`7f9059b` pdf, `d99f6bf` core, `7943980` editor, `e446491` chat, `55e0e4a` ui, `4b1b49f` latex); `xtask chat-replay` cableado y deps alineadas (`tree-sitter 0.26` + `codebook-tree-sitter-latex 0.6.1`) en `3430d9f`; **los 6 spikes están DONE**; **build release OK (15m42s) y `.exe` entregados en `dist\m0-demo\`** (esqueleto + 5 demos + xtask + grabador); gates finales del workspace en ejecución; luego **G0** (revisión con el usuario).
 | M0-S6 | fs/watcher + tree component | ✅ DONE | informe: `docs/qa/reports/M0-S6-spike-fs.md` · list_dir 5,6 ms/5k · tree sin evento de selección (→ M1-F2) |
 | M0-G0 | Freeze `INTERFACES.md` | TODO | orchestrator, al cerrar S1–S6 — requiere revisión del usuario |
 
