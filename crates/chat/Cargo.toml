@@ -12,3 +12,7 @@ serde_json.workspace = true
 camino.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+tokio.workspace = true
+reqwest = { workspace = true, features = ["query"] }
+async-channel.workspace = true
+anyhow.workspace = true
