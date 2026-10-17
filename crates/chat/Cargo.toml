@@ -16,3 +16,14 @@ tokio.workspace = true
 reqwest = { workspace = true, features = ["query"] }
 async-channel.workspace = true
 anyhow.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+# Job objects con kill-on-close (M1-E1): al morir la app, Windows cierra el
+# handle y mata el árbol completo de `opencode serve` (hijos incluidos).
+# `Win32_System_Threading` aporta `IO_COUNTERS`, campo de la estructura de límites.
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_System_JobObjects",
+  "Win32_System_Threading",
+] }

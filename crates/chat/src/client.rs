@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 
 use crate::error::{ChatError, Result};
 use crate::protocol::{
-    Health, ModelRef, PermissionReply, ProviderCatalog, SessionInfo, prompt_body,
+    Health, ModelRef, PermissionReply, ProviderCatalog, SessionInfo, prompt_body_with,
 };
 use crate::sse::{SseEvent, SseParser};
 
@@ -77,6 +77,64 @@ impl ApiClient {
             .map_err(Into::into)
     }
 
+    /// `GET /agent` — agentes disponibles (crudo; se parsea con
+    /// [`crate::protocol::parse_agents`]).
+    pub async fn agents(&self) -> Result<Value> {
+        let response = self
+            .request(reqwest::Method::GET, "/agent")
+            .timeout(Duration::from_secs(15))
+            .send()
+            .await?;
+        ensure_success(response, "/agent")
+            .await?
+            .json()
+            .await
+            .map_err(Into::into)
+    }
+
+    /// `GET /session` — todas las sesiones del server (se filtran por
+    /// `directory` en el servicio).
+    pub async fn list_sessions(&self) -> Result<Vec<SessionInfo>> {
+        let response = self
+            .request(reqwest::Method::GET, "/session")
+            .timeout(Duration::from_secs(15))
+            .send()
+            .await?;
+        ensure_success(response, "/session")
+            .await?
+            .json()
+            .await
+            .map_err(Into::into)
+    }
+
+    /// `GET /session/:id`.
+    pub async fn session(&self, session_id: &str) -> Result<SessionInfo> {
+        let response = self
+            .request(reqwest::Method::GET, &format!("/session/{session_id}"))
+            .timeout(Duration::from_secs(15))
+            .send()
+            .await?;
+        ensure_success(response, "GET /session/:id")
+            .await?
+            .json()
+            .await
+            .map_err(Into::into)
+    }
+
+    /// `DELETE /session/:id`.
+    pub async fn delete_session(&self, session_id: &str) -> Result<bool> {
+        let response = self
+            .request(reqwest::Method::DELETE, &format!("/session/{session_id}"))
+            .timeout(Duration::from_secs(15))
+            .send()
+            .await?;
+        ensure_success(response, "DELETE /session")
+            .await?
+            .json()
+            .await
+            .map_err(Into::into)
+    }
+
     /// `POST /session` — crea una sesión (opcionalmente scoped a `directory`,
     /// verificado en M0-S4: un mismo server puede servir varios proyectos).
     pub async fn create_session(
@@ -105,13 +163,24 @@ impl ApiClient {
         model: Option<&ModelRef>,
         text: &str,
     ) -> Result<()> {
+        self.prompt_async_with(session_id, model, None, text).await
+    }
+
+    /// Igual que [`Self::prompt_async`] pero con agente (`build`, `latex-fix`…).
+    pub async fn prompt_async_with(
+        &self,
+        session_id: &str,
+        model: Option<&ModelRef>,
+        agent: Option<&str>,
+        text: &str,
+    ) -> Result<()> {
         let response = self
             .request(
                 reqwest::Method::POST,
                 &format!("/session/{session_id}/prompt_async"),
             )
             .timeout(Duration::from_secs(30))
-            .json(&prompt_body(model, text))
+            .json(&prompt_body_with(model, agent, text))
             .send()
             .await?;
         let response = ensure_success(response, "POST prompt_async").await?;

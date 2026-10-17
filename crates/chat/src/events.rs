@@ -14,7 +14,7 @@
 //!   `metadata.diff` (unified diff) + `metadata.filepath` (absoluto).
 //! - `session.status` con `busy|idle|retry`; el fin de turno es `session.idle`.
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::protocol::event_type;
 
@@ -293,6 +293,41 @@ pub fn map_raw_event(data: &Value, sse_event: Option<&str>) -> SpikeEvent {
     }
 }
 
+/// Convierte el payload de `GET /session/:id/message` (`[{info, parts}…]`) en
+/// la misma secuencia de eventos de dominio que habría emitido el stream.
+///
+/// Es la base de la recuperación de gaps tras reconectar SSE (la API v1 **no**
+/// soporta `Last-Event-ID`, hallazgo M0-S4): el panel limpia la sesión y vuelve
+/// a reducir estos eventos.
+pub fn history_events(session_id: &str, messages: &Value) -> Vec<SpikeEvent> {
+    let Some(entries) = messages.as_array() else {
+        return Vec::new();
+    };
+    let mut events = Vec::new();
+    for entry in entries {
+        let info = entry.get("info").cloned().unwrap_or(Value::Null);
+        if !info.is_null() {
+            let raw = json!({
+                "id": "history",
+                "type": event_type::MESSAGE_UPDATED,
+                "properties": { "sessionID": session_id, "info": info },
+            });
+            events.push(map_raw_event(&raw, None));
+        }
+        if let Some(parts) = entry.get("parts").and_then(Value::as_array) {
+            for part in parts {
+                let raw = json!({
+                    "id": "history",
+                    "type": event_type::MESSAGE_PART_UPDATED,
+                    "properties": { "sessionID": session_id, "part": part },
+                });
+                events.push(map_raw_event(&raw, None));
+            }
+        }
+    }
+    events
+}
+
 fn map_part(part: &Value) -> SpikePartUpdate {
     let message_id = str_of(part, "messageID").unwrap_or_default();
     let part_id = str_of(part, "id").unwrap_or_default();
@@ -495,5 +530,61 @@ mod tests {
                 event_type: "weird.event".to_owned()
             }
         );
+    }
+
+    #[test]
+    fn history_payload_maps_to_message_and_part_events() {
+        let payload = json!([
+            {
+                "info": {
+                    "id": "msg_a", "role": "user",
+                    "time": { "created": 1, "completed": 2 }
+                },
+                "parts": [
+                    { "id": "prt_a", "messageID": "msg_a", "type": "text", "text": "hola",
+                      "time": { "start": 1, "end": 2 } }
+                ]
+            },
+            {
+                "info": {
+                    "id": "msg_b", "role": "assistant",
+                    "time": { "created": 3 },
+                    "providerID": "opencode-go", "modelID": "m"
+                },
+                "parts": [
+                    { "id": "prt_b", "messageID": "msg_b", "type": "tool", "tool": "bash",
+                      "callID": "call_1",
+                      "state": { "status": "completed", "output": "ok" } }
+                ]
+            }
+        ]);
+        let events = history_events("ses_1", &payload);
+        assert_eq!(events.len(), 4, "{events:#?}");
+        assert!(matches!(
+            &events[0],
+            SpikeEvent::MessageUpdated { message_id, role, completed, .. }
+                if message_id == "msg_a" && role == "user" && *completed
+        ));
+        assert!(matches!(
+            &events[1],
+            SpikeEvent::PartUpdated { part: SpikePartUpdate::Text { markdown, .. }, .. }
+                if markdown == "hola"
+        ));
+        assert!(matches!(
+            &events[2],
+            SpikeEvent::MessageUpdated { message_id, role, .. }
+                if message_id == "msg_b" && role == "assistant"
+        ));
+        assert!(matches!(
+            &events[3],
+            SpikeEvent::PartUpdated { part: SpikePartUpdate::Tool { name, state, .. }, .. }
+                if name == "bash" && *state == SpikeToolState::Completed
+        ));
+    }
+
+    #[test]
+    fn history_payload_tolerates_non_array_json() {
+        assert!(history_events("ses_1", &json!({})).is_empty());
+        assert!(history_events("ses_1", &Value::Null).is_empty());
     }
 }

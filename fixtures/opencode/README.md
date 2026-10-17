@@ -26,6 +26,7 @@ Una línea JSON por evento SSE, forma **congelada para `cargo xtask chat-replay`
 |---|---|
 | `spike-<YYYYMMDD-HHMMSS>.jsonl` | Grabación completa (todos los eventos del stream durante la sesión, incluido ruido de arranque: `plugin.added`, `catalog.updated`…) |
 | `spike-<…>-mini.jsonl` | Derivado: eventos de la sesión + `server.connected`/`server.heartbeat`, sin tipos de ruido; es el que consumen los tests |
+| `m1e-edit-permission.jsonl` | Derivado para QA visual de M1-E (E3/E4): solo el turno de edición (`apply_patch` + `permission.asked`/`replied`) de `spike-20261017-132346`, para que el panel muestre tool card + card de permiso sin scroll |
 
 ## Regenerar
 

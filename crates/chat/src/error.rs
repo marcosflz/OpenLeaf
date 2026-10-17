@@ -23,6 +23,10 @@ pub enum ChatError {
     #[error("el server no respondió healthy en {timeout_s}s (puerto {port})")]
     HealthTimeout { port: u16, timeout_s: u64 },
 
+    /// Se agotó el backoff de reintentos del supervisor (M1-E1).
+    #[error("no se pudo relanzar opencode tras {attempts} intentos: {last}")]
+    RestartExhausted { attempts: usize, last: String },
+
     /// Error de transporte HTTP.
     #[error("HTTP: {0}")]
     Http(#[from] reqwest::Error),

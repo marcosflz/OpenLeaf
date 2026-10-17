@@ -25,3 +25,6 @@ rust-i18n = "4.2"
 # `RenderImage` y `camino` para las rutas UTF-8 de SyncTeX.
 camino.workspace = true
 image = { version = "0.25", default-features = false }
+# M1-F4 (stream F, `new_project.rs`): selector nativo de carpeta destino del
+# wizard «Nuevo proyecto». Se usa en modo async para no bloquear el hilo UI.
+rfd.workspace = true
