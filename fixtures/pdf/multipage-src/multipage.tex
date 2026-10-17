@@ -1,0 +1,18 @@
+% Generator fixture: 30 pages of lorem ipsum (M1-C1, stream C).
+% Compilar (desde esta carpeta o con -outdir):
+%   latexmk -pdf -interaction=nonstopmode -file-line-error -outdir=<dest> multipage.tex
+% El resultado se copia a fixtures/pdf/multipage.pdf (fixture inmutable para
+% pruebas de virtualizacion, scroll y medicion; NO se recompila en cada test).
+% Nota: ASCII puro a proposito (sin inputenc especial) para maxima portabilidad.
+\documentclass[letterpaper,11pt]{article}
+\usepackage[T1]{fontenc}
+\usepackage{lipsum}
+\usepackage{pgffor}
+\pagestyle{plain}
+\begin{document}
+\foreach \n in {1,...,30}{%
+  \ifnum\n>1 \newpage\fi
+  \section*{Seccion \n{} - pagina de prueba}
+  \lipsum[\n]%
+}
+\end{document}

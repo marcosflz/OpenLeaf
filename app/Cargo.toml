@@ -23,3 +23,7 @@ tokio.workspace = true
 # Solo para el bin de spike M0-S2 (`spike-editor`): editor del kit con
 # tree-sitter-latex, gutter, dirty y guardado sobre copia temporal del fixture.
 lsx-editor.workspace = true
+# Solo para el bin de demo M1-C (`spike-pdf`): `TexLivePaths` para localizar
+# synctex.exe y `serde_json` para leer `pdf.maxCacheMB` de config/settings.json.
+lsx-latex.workspace = true
+serde_json.workspace = true

@@ -4,13 +4,14 @@
 //! - `PdfDocument` (abrir con hayro, page_count, page_size_pt, render → `PageBitmap`)
 //! - `PdfCache` LRU por bytes, re-render progresivo, invalidación por generación
 //! - `coords` (bp ↔ px, origen arriba-izquierda, UNA sola implementación)
-//! - traducción de `SyncPoint` (SyncTeX) a rectángulo en pantalla
+//! - `PdfRenderer` (documento + caché, apto para `background_spawn`)
 //!
 //! Regla dura: sin gpui (los bitmaps se entregan a `lsx-ui`, que los sube a textura).
 //!
-//! Estado M0-S3 (spike): `PdfDocument`, `PageBitmap` y `coords` implementados y
-//! medidos contra `fixtures/pdf/cv.pdf`. `PdfCache` (M1-C2) seguirá el diseño
-//! LRU por bytes con clave `(generation, page, scale_bucket)`.
+//! Estado M1-C2: `PdfDocument`, `PageBitmap`, `coords`, `PdfCache` y
+//! `PdfRenderer` implementados y medidos contra `fixtures/pdf/{cv,multipage}.pdf`.
+//! La recarga con `generation++` y el render progresivo los orquesta el visor
+//! (`lsx-ui::panels::pdf`).
 //!
 //! Nota de plataforma UI (hallazgo del spike, para `lsx-ui`): el `RenderImage`
 //! de GPUI 0.3.9 espera bytes **BGRA** (`image::Frame` sobre `RgbaImage`), y su
@@ -19,7 +20,11 @@
 
 mod document;
 
+mod cache;
 pub mod coords;
+mod renderer;
 
+pub use cache::{CacheKey, CacheStats, DEFAULT_MAX_CACHE_MB, PdfCache, scale_bucket};
 pub use coords::BP_PER_INCH;
 pub use document::{PageBitmap, PdfDocument, PdfError};
+pub use renderer::PdfRenderer;
