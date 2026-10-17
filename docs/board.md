@@ -33,4 +33,5 @@
 - **P0.4b**: crear remoto GitHub (privado por defecto) y push para verificar CI verde. Necesita decisión del usuario.
 - **R6** (AGENTS.md del repo vs producto): test explícito en G1; los proyectos del producto viven en `workspace/` (ignorado por git).
 - **Hallazgo gpui-kit (P0)**: `Button` se importa con `use gpui_kit::component::button::*;` — propagar a los skills `lsx-gpui-patterns`/`lsx-editor-ts` en M0.
+- **Desviación M0 (aprobada por orchestrator)**: los spikes trabajan **directamente sobre `main`** con propiedad estricta de archivos (sin worktrees), para evitar 6 builds completos del árbol GPUI; los streams de M1+ sí usan worktrees+branches. Cada spike: binario propio en `app/src/bin/spike-*.rs` + su crate.
 - Los fixtures `main.tex` se compilan con el `tex/` portátil real: reproducible con `xtask fixtures` (implementación en M0).
