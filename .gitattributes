@@ -1,0 +1,12 @@
+# Normalización de fin de línea (evita churn CRLF/LF en Windows)
+* text=auto eol=lf
+
+# Binarios
+*.pdf -text
+*.jpeg -text
+*.png -text
+*.gz -text
+*.exe -text
+
+# Fixtures: logs y tex siempre LF
+fixtures/** text eol=lf
