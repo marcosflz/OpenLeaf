@@ -354,3 +354,18 @@ UI ◄── AppEvent (async_channel) ◄── servicios        ◄── reduc
 | I-5 | Puerto/instancia de opencode por proyecto o global | Global por app, cwd = proyecto activo | G0 |
 | I-6 | ¿`gpui-fast`? | No en v1 | G0 |
 | I-7 | ¿Dock como layout fijo 4 o dockable libre? | Dock del kit con 4 hojas fijas (sin drag de pestañas entre paneles en v1) | G0 |
+
+---
+
+## 12. Hallazgos de spikes M0 (se consolidan al congelar en G0)
+
+### M0-S3 — PDF (hayro 0.8 + RenderImage) — VERIFICADO (2026-10-17)
+
+- `Pdf::new(data)` (error sin Display/Error — envolver); `pdf.pages()` → `len()/get(i)`; `Page::render_dimensions() -> (f32,f32)` (rotación aplicada).
+- `hayro::render(page, &RenderCache, &InterpreterSettings, &RenderSettings, &PixmapSettings) -> vello_cpu::Pixmap`; `PixmapSettings { x_scale, y_scale, bg_color }` (bg BLANCO = papel).
+- `Pixmap::data_as_u8_slice()` → RGBA8 **premultiplicado**, row-major.
+- GPUI: `RenderImage::new(Frame::new(RgbaImage))` espera **BGRA** en Windows (swap en `lsx-ui`); `RenderImage::scale_factor` privado → `.w(px(w_bmp/dpr)).h(px(h_bmp/dpr))`.
+- `RenderCache` NO puede vivir dentro de `PdfDocument` (invariancia `'a` por `RefCell<Font<'a>>`): cache a nivel de visor (sesión), no del documento.
+- Medidas release (CV Letter 612×792 bp, página 1): p50 ≈ **4.3 / 5.6 / 7.9 ms** a escala 1.0/1.5/2.0 (reuso de cache: 2.2/4.3/6.6). Debug ≈ 91/131/180 ms. Presupuesto <120 ms ✓.
+- Decisión I-2 confirmada: visor propio con `RenderImage`; `gpui-pdf` descartado (GPL + modelo ajeno).
+- Pendiente para fixtures: PDF con `/Rotate` real.
