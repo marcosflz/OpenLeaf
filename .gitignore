@@ -6,6 +6,7 @@
 /target
 /dist
 .worktrees/
+/shots
 
 # Distribución pesada y legacy (se quedan en disco, no en git)
 /legacy

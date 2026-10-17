@@ -76,3 +76,14 @@ Evidencia: <captura/GIF/log>
 Gates: fmt ✅ clippy ✅ nextest ✅ deny ✅ (extras)
 Riesgos/notas: <...>
 ```
+
+## Evidencia visual (UI)
+
+```powershell
+pwsh scripts/capture-window.ps1 -ProcessName spike-<x> -Out shots/<nombre>.png -DelaySeconds 1
+```
+
+- Captura la ventana PRINCIPAL (mayor área visible) aunque esté tapada: flota la ventana con `HWND_TOPMOST` (no roba el foco) y la restaura al terminar. DPI-aware.
+- Con bins que muestran consola, elige la ventana GPUI (EnumWindows), no `MainWindowHandle`.
+- **Lee siempre el PNG** (la herramienta de lectura acepta imágenes) antes de adjuntarlo como evidencia; itera estilo → captura → lectura.
+- `shots/` está en `.gitignore`; adjunta las capturas en los informes de gate (`docs/qa/reports/`).
