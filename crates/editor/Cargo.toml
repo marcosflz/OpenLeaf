@@ -7,7 +7,32 @@ rust-version.workspace = true
 
 [dependencies]
 lsx-core.workspace = true
-gpui-kit.workspace = true
+
+# `tree-sitter-languages` es la feature umbrella de gpui-kit que activa el
+# módulo `component::highlighter` (gpui-component/tree-sitter + gramáticas
+# incluidas). Necesaria para el resaltado del editor (M0-S2).
+gpui-kit = { workspace = true, features = ["tree-sitter-languages"] }
+
 camino.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+
+# ⚠ M0-S2: gpui-component 0.7.3 compila contra tree-sitter 0.26.13 y su
+# `highlighter::GrammarConfig::new` exige ese `tree_sitter::Language`. El pin
+# `tree-sitter = "0.27"` del workspace es semver-incompatible con 0.26 (en
+# semver 0.x cada minor es una crate distinta en el grafo), así que aquí se
+# fija 0.26.13 para unificar con gpui-component. El pin del workspace puede
+# seguir usándose en otros crates (conviven ambas versiones).
+tree-sitter = "0.26.13"
+
+# ⚠ M0-S2: `tree-sitter-latex` 0.1.0 de crates.io está ROTO tal cual se publicó:
+# su parser.c referencia `tree_sitter_latex_external_scanner_*` pero el tarball
+# NO incluye src/scanner.c (y su build.rs solo lo compila `if exists`), así que
+# cualquier binario falla al enlazar (LNK2001). Verificado 2026-10-17.
+# Se usa `codebook-tree-sitter-latex` 0.6.1: republish en crates.io del MISMO
+# repo upstream (latex-lsp/tree-sitter-latex), con scanner.c incluido y
+# `LANGUAGE: LanguageFn` (independiente de la versión de tree-sitter).
+# El alias `tree-sitter-latex = { package = ... }` mantiene el código fuente
+# intacto: si el orchestrator decide otro pin (git del monorepo o vendor),
+# solo cambia esta línea.
+tree-sitter-latex = { package = "codebook-tree-sitter-latex", version = "0.6.1" }
