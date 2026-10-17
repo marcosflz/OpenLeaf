@@ -14,6 +14,28 @@
 //! Prueba del watcher: con la ventana abierta, desde otra consola
 //! `Set-Content "$env:TEMP\spike-tree-projects\cv\prueba.txt" (Get-Random)`
 //! y verás el lote en el panel derecho y el árbol refrescado.
+//!
+//! # Diseño: look «VS Code Explorer» (pase de pulido)
+//!
+//! Métricas por fila: alto 22 px, fuente 13 px, iconos 16 px, chevron
+//! `ChevronRight`/`ChevronDown` de 16 px y sangría de 10 px por nivel.
+//! Selección = fila completa con `accent` (#4C8DFF) al 24 % de alfa; hover =
+//! `foreground` al 7 % (`tokens.list_hover`). Encabezado de sección de 28 px
+//! con etiqueta 11 px versalitas y botones solo-icono de 24 px; panel «SALIDA»
+//! de 300 px con título 11 px y líneas mono 11 px; barra de estado de 22 px.
+//!
+//! **Decisión — se mantiene `component::tree`** (evidencia en la fuente
+//! vendored de `gpui-component-0.7.3` y `gpui-base-0.7.3`):
+//! - `tree()` delega en `gpui_base::Tree`, que ya virtualiza con `uniform_list`
+//!   y pinta cada fila con el `ListItem` que devuelve el llamante.
+//! - `ListItem` aplica `refine_style(&self.style)` **después** de sus defaults
+//!   (`py_1`, `px_3`, `text_base`), así que se pueden imponer `h(px(22.))`,
+//!   `py_0()`, `px_0()` y `text_size(px(13.))` sin pelear con el kit; su alto
+//!   lo fija el contenido y `uniform_list` mide la primera fila (constante).
+//! - La selección de fila ya usa `theme.list_active` (lo reajustamos a
+//!   accent@24 %) y el hover `theme.tokens.list_hover` (foreground@7 %), de
+//!   modo que no hace falta una `uniform_list` propia para lograr las
+//!   métricas ni los estados visuales de VS Code.
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -25,7 +47,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::WindowExt as _;
-use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
+use gpui_kit::component::button::{
+    Button, ButtonCustomVariant, ButtonVariant, ButtonVariants as _,
+};
 use gpui_kit::component::dialog::{DialogAction, DialogClose, DialogDescription, DialogFooter};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::list::ListItem;
@@ -43,12 +67,40 @@ const LOG_CAP: usize = 200;
 /// Filas visibles del log (más recientes primero).
 const LOG_ROWS: usize = 60;
 
+/// Acento del producto (el mismo `#4C8DFF` del spike S1).
+const ACCENT_RGB: u32 = 0x004C_8DFF;
+/// Alto de fila del árbol (VS Code Explorer ≈22 px lógicos).
+const ROW_HEIGHT: f32 = 22.;
+/// Fuente de las filas del árbol (VS Code usa ≈13 px).
+const ROW_FONT_SIZE: f32 = 13.;
+/// Sangría extra por nivel de profundidad (VS Code ≈10 px).
+const INDENT_STEP: f32 = 10.;
+/// Sangría base del primer nivel.
+const INDENT_BASE: f32 = 4.;
+/// Lado del icono de archivo/carpeta y del hueco de chevron.
+const ICON_SIZE: f32 = 16.;
+/// Ancho del panel de salida.
+const OUTPUT_WIDTH: f32 = 300.;
+/// Alto del encabezado de sección y de las barras compactas.
+const BAR_HEIGHT: f32 = 28.;
+/// Alto de la barra de estado.
+const STATUS_HEIGHT: f32 = 22.;
+
 fn main() {
     gpui_kit::application()
         .with_assets(gpui_kit::assets::AllAssets)
         .run(move |cx| {
             gpui_kit::init(cx);
             Theme::change(ThemeMode::Dark, None, cx);
+            Theme::update(cx, |theme| {
+                let accent = Hsla::from(rgb(ACCENT_RGB));
+                let foreground = theme.foreground;
+                theme.accent = accent;
+                // Fila seleccionada: azul del acento suave (VS Code usa #04395E).
+                theme.list_active = accent.opacity(0.24);
+                // Hover sutil sobre filas no seleccionadas.
+                theme.tokens.list_hover = foreground.opacity(0.07).into();
+            });
             let options = WindowOptions {
                 titlebar: Some(TitlebarOptions {
                     title: Some("Spike M0-S6 · Árbol de archivos + watcher".into()),
@@ -56,7 +108,7 @@ fn main() {
                 }),
                 window_bounds: Some(WindowBounds::Windowed(Bounds::new(
                     point(px(30.), px(30.)),
-                    size(px(940.), px(600.)),
+                    size(px(900.), px(560.)),
                 ))),
                 ..Default::default()
             };
@@ -551,63 +603,79 @@ impl SpikeTree {
 
     // --- render ------------------------------------------------------------
 
-    fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// Encabezado de sección estilo VS Code: etiqueta 11 px versalitas a la
+    /// izquierda y acciones solo-icono de 24 px a la derecha.
+    fn render_section_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
         h_flex()
             .flex_none()
-            .px_3()
-            .py_2()
-            .gap_2()
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .child(
-                Icon::new(IconName::Search)
-                    .small()
-                    .text_color(cx.theme().muted_foreground),
-            )
+            .h(px(BAR_HEIGHT))
+            .px_2()
+            .gap_1()
+            .items_center()
             .child(
                 div()
-                    .w(px(280.))
-                    .child(Input::new(&self.filter).cleanable(true)),
+                    .text_size(px(11.))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(cx.theme().muted_foreground)
+                    .child("EXPLORADOR"),
             )
             .child(div().flex_1())
-            .child(
-                Button::new("new-file")
-                    .icon(IconName::FilePlus)
-                    .label("Nuevo archivo")
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        let parent = this.selection_dir(cx);
-                        this.open_create_dialog(window, cx, parent, EntryKind::File);
-                    })),
-            )
-            .child(
-                Button::new("new-dir")
-                    .icon(IconName::FolderPlus)
-                    .label("Nueva carpeta")
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        let parent = this.selection_dir(cx);
-                        this.open_create_dialog(window, cx, parent, EntryKind::Dir);
-                    })),
-            )
-            .child(
-                Button::new("refresh")
-                    .icon(IconName::RefreshCw)
-                    .ghost()
-                    .tooltip("Recargar el árbol")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.set_status("árbol recargado a mano");
-                        this.rebuild_tree(cx);
-                    })),
-            )
-            .child(
-                Button::new("reset")
-                    .icon(IconName::RotateCcw)
-                    .ghost()
-                    .tooltip("Restaurar la copia de fixtures/projects")
-                    .on_click(cx.listener(|this, _, window, cx| this.reset_copy(window, cx))),
-            )
+            .child(header_action(
+                cx,
+                "new-file",
+                IconName::FilePlus,
+                "Nuevo archivo (en la carpeta seleccionada)",
+                cx.listener(|this, _, window, cx| {
+                    let parent = this.selection_dir(cx);
+                    this.open_create_dialog(window, cx, parent, EntryKind::File);
+                }),
+            ))
+            .child(header_action(
+                cx,
+                "new-dir",
+                IconName::FolderPlus,
+                "Nueva carpeta (en la carpeta seleccionada)",
+                cx.listener(|this, _, window, cx| {
+                    let parent = this.selection_dir(cx);
+                    this.open_create_dialog(window, cx, parent, EntryKind::Dir);
+                }),
+            ))
+            .child(header_action(
+                cx,
+                "refresh",
+                IconName::RefreshCw,
+                "Recargar el árbol",
+                cx.listener(|this, _, _, cx| {
+                    this.set_status("árbol recargado a mano");
+                    this.rebuild_tree(cx);
+                }),
+            ))
+            .child(header_action(
+                cx,
+                "reset",
+                IconName::RotateCcw,
+                "Restaurar la copia de fixtures/projects",
+                cx.listener(|this, _, window, cx| this.reset_copy(window, cx)),
+            ))
     }
 
-    fn render_event_panel(&self, cx: &mut Context<Self>, watcher_alive: bool) -> impl IntoElement {
+    /// Filtro slim (24 px de alto) bajo el encabezado.
+    fn render_filter(&self) -> impl IntoElement {
+        h_flex().flex_none().px_2().pb(px(6.)).child(
+            div().w_full().child(
+                Input::new(&self.filter)
+                    .small()
+                    .text_size(px(12.5))
+                    .rounded(px(3.))
+                    .cleanable(true),
+            ),
+        )
+    }
+
+    /// Panel «SALIDA» estilo Output de VS Code: cabecera de 11 px versalitas,
+    /// líneas mono de 11 px y fondo ligeramente distinto al del árbol.
+    fn render_output_panel(&self, cx: &mut Context<Self>, watcher_alive: bool) -> impl IntoElement {
+        let mono = cx.theme().mono_font_family.clone();
         let rows = self
             .log
             .iter()
@@ -615,72 +683,106 @@ impl SpikeTree {
             .take(LOG_ROWS)
             .map(|line| {
                 div()
-                    .text_xs()
+                    .font_family(mono.clone())
+                    .text_size(px(11.))
                     .text_color(cx.theme().muted_foreground)
+                    .whitespace_nowrap()
+                    .overflow_hidden()
+                    .text_ellipsis()
                     .child(line.clone())
             })
             .collect::<Vec<_>>();
-        let (health_icon, health_text) = if watcher_alive {
-            (IconName::CircleCheck, "watcher activo")
+        let (health_icon, health_text, health_color) = if watcher_alive {
+            (IconName::CircleCheck, "watcher activo", cx.theme().success)
         } else {
-            (IconName::TriangleAlert, "watcher detenido")
+            (
+                IconName::TriangleAlert,
+                "watcher detenido",
+                cx.theme().danger,
+            )
         };
 
         v_flex()
-            .w(px(360.))
+            .w(px(OUTPUT_WIDTH))
             .h_full()
             .flex_none()
+            .bg(cx.theme().background)
             .border_l_1()
             .border_color(cx.theme().border)
-            .p_3()
-            .gap_2()
             .child(
                 h_flex()
+                    .flex_none()
+                    .h(px(BAR_HEIGHT))
+                    .px_2()
                     .gap_2()
                     .items_center()
-                    .child(Icon::new(health_icon).small().text_color(if watcher_alive {
-                        cx.theme().success
-                    } else {
-                        cx.theme().danger
-                    }))
-                    .child(div().text_sm().child("Eventos del watcher")),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(format!(
-                        "{health_text} · debounce 200 ms · {}",
-                        self.last_batch
-                    )),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("Toca archivos desde otra consola (pwsh):"),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .rounded(cx.theme().radius)
-                    .bg(cx.theme().muted)
-                    .p_2()
-                    .child(format!(
-                        "Set-Content \"$env:TEMP\\{COPY_DIR_NAME}\\cv\\prueba.txt\" (Get-Random)"
-                    )),
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(cx.theme().muted_foreground)
+                            .child("SALIDA"),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        Icon::new(health_icon)
+                            .size(px(12.))
+                            .text_color(health_color),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .text_color(cx.theme().muted_foreground)
+                            .child(health_text),
+                    ),
             )
             .child(
                 v_flex()
                     .id("event-log")
                     .flex_1()
                     .min_h_0()
-                    .gap_1()
+                    .p_2()
+                    .gap(px(4.))
                     .overflow_hidden()
-                    .children(rows),
+                    .child(
+                        div()
+                            .font_family(mono.clone())
+                            .text_size(px(11.))
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!("debounce 200 ms · {}", self.last_batch)),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .text_color(cx.theme().muted_foreground)
+                            .child("Toca archivos desde otra consola (pwsh):"),
+                    )
+                    .child(
+                        div()
+                            .font_family(mono.clone())
+                            .text_size(px(11.))
+                            .text_color(cx.theme().muted_foreground)
+                            .rounded(px(2.))
+                            .bg(cx.theme().muted)
+                            .p(px(6.))
+                            .child(format!(
+                                "Set-Content \"$env:TEMP\\{COPY_DIR_NAME}\\cv\\prueba.txt\" (Get-Random)"
+                            )),
+                    )
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_h_0()
+                            .gap(px(2.))
+                            .overflow_hidden()
+                            .children(rows),
+                    ),
             )
     }
 
+    /// Barra de estado compacta (22 px, 12 px de fuente).
     fn render_status(
         &self,
         cx: &mut Context<Self>,
@@ -695,12 +797,13 @@ impl SpikeTree {
         };
         h_flex()
             .flex_none()
-            .px_3()
-            .py_2()
-            .gap_4()
+            .h(px(STATUS_HEIGHT))
+            .px_2()
+            .gap_3()
+            .items_center()
             .border_t_1()
             .border_color(cx.theme().border)
-            .text_sm()
+            .text_size(px(12.))
             .text_color(cx.theme().muted_foreground)
             .child(
                 div()
@@ -729,26 +832,66 @@ impl Render for SpikeTree {
 
         let tree_element = tree(&self.tree, |_ix, entry, selected, _window, cx| {
             let is_dir = entry.is_folder();
-            let icon = if is_dir {
-                if entry.is_expanded() {
-                    IconName::FolderOpen
+            let expanded = entry.is_expanded();
+            let label = entry.item().label.clone();
+            let depth = entry.depth() as f32;
+
+            let (icon, icon_color) = if is_dir {
+                (
+                    if expanded {
+                        IconName::FolderOpen
+                    } else {
+                        IconName::FolderClosed
+                    },
+                    cx.theme().muted_foreground,
+                )
+            } else {
+                let icon = file_icon(label.as_ref());
+                (icon, file_icon_color(icon, cx))
+            };
+            // Columna fija de chevron: VS Code también la reserva en archivos.
+            let chevron_slot: AnyElement = if is_dir {
+                Icon::new(if expanded {
+                    IconName::ChevronDown
                 } else {
-                    IconName::FolderClosed
-                }
+                    IconName::ChevronRight
+                })
+                .size(px(ICON_SIZE))
+                .text_color(cx.theme().muted_foreground)
+                .into_any_element()
             } else {
-                file_icon(entry.item().label.as_ref())
+                div().size(px(ICON_SIZE)).into_any_element()
             };
-            let icon_color = if is_dir {
-                cx.theme().primary
+            let name_color = if selected {
+                cx.theme().foreground
             } else {
-                cx.theme().muted_foreground
+                cx.theme().foreground.opacity(0.85)
             };
+
             ListItem::new(entry.item().id.clone())
                 .selected(selected)
-                .pl(px(6. + 14. * entry.depth() as f32))
-                .gap_2()
-                .child(Icon::new(icon).small().text_color(icon_color))
-                .child(entry.item().label.clone())
+                .h(px(ROW_HEIGHT))
+                .py_0()
+                .px_0()
+                .pl(px(INDENT_BASE + INDENT_STEP * depth))
+                .pr(px(6.))
+                .text_size(px(ROW_FONT_SIZE))
+                .child(
+                    h_flex()
+                        .w_full()
+                        .items_center()
+                        .gap(px(4.))
+                        .child(chevron_slot)
+                        .child(Icon::new(icon).size(px(ICON_SIZE)).text_color(icon_color))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_color(name_color)
+                                .child(label),
+                        ),
+                )
         })
         .context_menu(move |_ix, entry, menu, _window, _cx| context_menu_for(&weak, entry, menu));
 
@@ -756,13 +899,21 @@ impl Render for SpikeTree {
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
-            .child(self.render_toolbar(cx))
             .child(
                 h_flex()
                     .flex_1()
                     .min_h_0()
-                    .child(div().flex_1().min_w_0().h_full().child(tree_element))
-                    .child(self.render_event_panel(cx, watcher_alive)),
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .bg(cx.theme().background.blend(cx.theme().border.opacity(0.5)))
+                            .child(self.render_section_header(cx))
+                            .child(self.render_filter())
+                            .child(div().flex_1().min_h_0().child(tree_element)),
+                    )
+                    .child(self.render_output_panel(cx, watcher_alive)),
             )
             .child(self.render_status(cx, selection))
     }
@@ -904,6 +1055,40 @@ fn file_icon(name: &str) -> IconName {
         "sh" | "ps1" | "cmd" | "bat" => IconName::FileTerminal,
         _ => IconName::File,
     }
+}
+
+/// Color del icono de archivo: tintes sobrios por tipo (Seti de VS Code).
+fn file_icon_color(icon: IconName, cx: &App) -> Hsla {
+    match icon {
+        IconName::FileCode => cx.theme().blue,
+        IconName::FileImage => cx.theme().magenta,
+        IconName::FileBraces => cx.theme().yellow,
+        IconName::FileTerminal => cx.theme().green,
+        _ => cx.theme().muted_foreground,
+    }
+}
+
+/// Botón de acción del encabezado: solo icono (24×24), fondo transparente,
+/// hover/active sutiles y tooltip.
+fn header_action(
+    cx: &App,
+    id: &'static str,
+    icon: IconName,
+    tooltip: &'static str,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Button {
+    Button::new(id)
+        .icon(icon)
+        .small()
+        .rounded(px(3.))
+        .custom(
+            ButtonCustomVariant::new(cx)
+                .foreground(cx.theme().muted_foreground)
+                .hover(cx.theme().foreground.opacity(0.08))
+                .active(cx.theme().foreground.opacity(0.13)),
+        )
+        .tooltip(tooltip)
+        .on_click(on_click)
 }
 
 fn hhmmss() -> String {
