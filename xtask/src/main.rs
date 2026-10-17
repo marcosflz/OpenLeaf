@@ -50,7 +50,9 @@ fn chat_replay() {
         Ok(events) => {
             let mut counts: BTreeMap<&'static str, usize> = BTreeMap::new();
             for event in &events {
-                *counts.entry(lsx_chat::replay::event_name(event)).or_default() += 1;
+                *counts
+                    .entry(lsx_chat::replay::event_name(event))
+                    .or_default() += 1;
             }
             println!("{} → {} eventos", path.display(), events.len());
             for (name, count) in counts {
