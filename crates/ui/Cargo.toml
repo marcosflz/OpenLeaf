@@ -16,3 +16,12 @@ tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+# M1-A2/A4: canal de estado paneles→shell y resultado del modal de permiso.
+async-channel.workspace = true
+# M1-A6: i18n con rust-i18n (misma versión que usa gpui-component 0.7.3, de
+# modo que ambos crates comparten backend y `set_locale` es global).
+rust-i18n = "4.2"
+# M1-C (stream C, `panels/pdf.rs`): `image::Frame` para subir bitmaps a
+# `RenderImage` y `camino` para las rutas UTF-8 de SyncTeX.
+camino.workspace = true
+image = { version = "0.25", default-features = false }

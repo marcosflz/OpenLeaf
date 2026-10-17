@@ -1252,9 +1252,7 @@ impl EditorPanel {
     fn close_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.find_open = false;
         if let Some(ix) = self.active {
-            self.docs[ix]
-                .editor
-                .update(cx, find::close);
+            self.docs[ix].editor.update(cx, find::close);
         }
         self.focus_active(window, cx);
         cx.notify();

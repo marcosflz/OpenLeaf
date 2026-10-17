@@ -1,0 +1,1013 @@
+//! `AppRoot` — shell de producción (M1-A1..A5).
+//!
+//! Composición de arriba abajo:
+//!
+//! ```text
+//! TitleBar  (controles de ventana del SO + título)
+//! Toolbar   proyecto ▾ · ▶ compilar · motor … toggles de hoja · ajustes · palette
+//! DockArea  h_split [árbol | editor | pdf | chat]   ← resizable, 4 hojas fijas
+//! StatusBar Ln/Col · palabras · página · compilación · dot IA
+//! ```
+//!
+//! Responsabilidades:
+//! - **M1-A1**: dock real, colapso por hoja (`Panel::visible`), focus mode,
+//!   atajos `Ctrl+Alt+1/3/4/V/M` y persistencia con debounce en
+//!   `settings.ui.dock` (esquema §7) + restauración al arrancar.
+//! - **M1-A2**: toolbar y status bar con estado por canal
+//!   ([`crate::status::StatusMessage`]).
+//! - **M1-A4**: notificaciones y modal de permiso
+//!   ([`crate::permission::PermissionCard`], botón demo).
+//! - **M1-A5**: command palette (kit `command`) y ajustes mínimos.
+//!
+//! Los paneles no conocen este tipo: emiten [`PaneEvent`]s y el shell decide.
+
+use std::time::Duration;
+
+use gpui_kit::assets::IconName;
+use gpui_kit::component::{
+    ActiveTheme as _, Selectable as _, Sizable as _, TitleBar, WindowExt as _,
+    button::{Button, ButtonVariants as _, DropdownButton},
+    command::{Command, CommandState},
+    dialog::DialogDescription,
+    dock::{DockArea, DockEvent, DockLayout, DockPlacement, DockSkin, PanelInfo, panel_handle},
+    h_flex,
+    menu::PopupMenuItem,
+    v_flex,
+};
+use gpui_kit::{
+    App, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
+    ParentElement as _, Pixels, Render, SharedString, Styled as _, Subscription, Task, Window, div,
+    px,
+};
+use lsx_core::config::{ConfigWarning, Settings};
+use lsx_core::root::PortableRoot;
+
+use crate::layout::{FocusMode, ShellLayout, SlotKind};
+use crate::notifications;
+use crate::palette::PaletteCommand;
+use crate::panels::{PaneEvent, PlaceholderPanel, TreePanel};
+use crate::permission::{PermissionCard, PermissionRequest};
+use crate::project::ProjectService;
+use crate::settings_ui;
+use crate::status::{AiState, StatusHandle, StatusModel};
+use crate::{status_bar, theme, toolbar};
+
+/// Debounce del guardado del layout (ms) tras `DockEvent::LayoutChanged`.
+const LAYOUT_SAVE_DEBOUNCE: Duration = Duration::from_millis(450);
+/// Ancho de referencia cuando el dock aún no se ha medido (primer frame).
+const DEFAULT_REFERENCE_WIDTH: Pixels = px(1600.);
+
+gpui_kit::actions!(
+    lsx_ui_shell,
+    [
+        ToggleTreePane,
+        TogglePdfPane,
+        ToggleChatPane,
+        ToggleFocusMode,
+        OpenPalette,
+        OpenSettingsPane
+    ]
+);
+
+/// Título de la ventana de error de arranque (la usa `app/src/main.rs`).
+pub fn root_error_title() -> String {
+    rust_i18n::t!("ui.app.window.root_error_title").to_string()
+}
+
+/// Pista de la ventana de error de arranque.
+pub fn root_error_hint() -> String {
+    rust_i18n::t!("ui.app.window.root_error_hint").to_string()
+}
+
+/// Registra los atajos globales del shell (una vez, en `lsx_ui::init`).
+pub fn register_keybindings(cx: &mut App) {
+    use gpui_kit::KeyBinding;
+    cx.bind_keys([
+        KeyBinding::new("ctrl-alt-1", ToggleTreePane, None),
+        KeyBinding::new("ctrl-alt-3", TogglePdfPane, None),
+        KeyBinding::new("ctrl-alt-v", TogglePdfPane, None),
+        KeyBinding::new("ctrl-alt-4", ToggleChatPane, None),
+        KeyBinding::new("ctrl-alt-m", ToggleFocusMode, None),
+        KeyBinding::new("ctrl-p", OpenPalette, None),
+        KeyBinding::new("ctrl-,", OpenSettingsPane, None),
+    ]);
+}
+
+/// Vista raíz de la aplicación.
+pub struct AppRoot {
+    portable: PortableRoot,
+    settings: Settings,
+    warnings: Vec<ConfigWarning>,
+    project: ProjectService,
+    status_model: StatusModel,
+    status_handle: StatusHandle,
+    layout: ShellLayout,
+    active: SlotKind,
+    dock: Entity<DockArea>,
+    tree: Entity<TreePanel>,
+    editor: Entity<PlaceholderPanel>,
+    pdf: Entity<PlaceholderPanel>,
+    chat: Entity<PlaceholderPanel>,
+    focus: FocusHandle,
+    palette: Entity<CommandState>,
+    layout_generation: u64,
+    layout_dirty: bool,
+    _status_task: Task<()>,
+    _dock_events: Subscription,
+    _pane_events: Vec<Subscription>,
+}
+
+impl AppRoot {
+    /// Monta el shell completo. Ver el módulo para el orden de las piezas.
+    pub fn new(
+        portable: PortableRoot,
+        settings: Settings,
+        warnings: Vec<ConfigWarning>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let (dock, _skin) = DockSkin::dock_area("latex-studio-dock", Some(1), window, cx);
+        let (status_handle, status_rx) = crate::status::channel();
+
+        let project_service = ProjectService::new(&portable);
+        let startup = project_service.startup_project(&settings);
+
+        let tree = cx.new(|cx| {
+            TreePanel::new(
+                window,
+                startup.clone(),
+                status_handle.clone(),
+                Some(dock.downgrade()),
+                cx,
+            )
+        });
+        let editor =
+            cx.new(|cx| PlaceholderPanel::new(SlotKind::Editor, Some(dock.downgrade()), cx));
+        let pdf = cx.new(|cx| PlaceholderPanel::new(SlotKind::Pdf, Some(dock.downgrade()), cx));
+        let chat = cx.new(|cx| PlaceholderPanel::new(SlotKind::Chat, Some(dock.downgrade()), cx));
+
+        let mut dock_layout = DockLayout::h_split();
+        for kind in SlotKind::ALL {
+            let handle = match kind {
+                SlotKind::Tree => panel_handle(tree.clone()),
+                SlotKind::Editor => panel_handle(editor.clone()),
+                SlotKind::Pdf => panel_handle(pdf.clone()),
+                SlotKind::Chat => panel_handle(chat.clone()),
+            };
+            dock_layout = dock_layout.child(DockLayout::tabs().panel_view(handle, cx), None);
+        }
+        dock.update(cx, |dock, cx| {
+            dock.set_center(dock_layout, window, cx);
+            // I-7 v1: 4 hojas fijas; el lock desactiva drag/drop de grupos y
+            // conserva el redimensionado de splits.
+            dock.set_locked(true, window, cx);
+        });
+
+        let dock_events = cx.subscribe(&dock, |this, _dock, event: &DockEvent, cx| {
+            if matches!(event, DockEvent::LayoutChanged) {
+                this.on_dock_layout_changed(cx);
+            }
+        });
+        let pane_events = vec![
+            cx.subscribe_in(
+                &tree,
+                window,
+                |this, _panel, event: &PaneEvent, window, cx| {
+                    this.on_pane_event(*event, window, cx);
+                },
+            ),
+            cx.subscribe_in(
+                &editor,
+                window,
+                |this, _panel, event: &PaneEvent, window, cx| {
+                    this.on_pane_event(*event, window, cx);
+                },
+            ),
+            cx.subscribe_in(
+                &pdf,
+                window,
+                |this, _panel, event: &PaneEvent, window, cx| {
+                    this.on_pane_event(*event, window, cx);
+                },
+            ),
+            cx.subscribe_in(
+                &chat,
+                window,
+                |this, _panel, event: &PaneEvent, window, cx| {
+                    this.on_pane_event(*event, window, cx);
+                },
+            ),
+        ];
+
+        let status_task = cx.spawn(async move |this, cx| {
+            while let Ok(message) = status_rx.recv().await {
+                let updated = this.update(cx, |root, cx| {
+                    if root.status_model.apply(&message) {
+                        cx.notify();
+                    }
+                });
+                if updated.is_err() {
+                    break;
+                }
+            }
+        });
+
+        let focus = cx.focus_handle();
+        let palette = cx.new(|cx| CommandState::new(window, cx));
+
+        let mut warnings = warnings;
+
+        // Motor LaTeX: solo comprobación de presencia (el probe real llega en M1-D1).
+        let latexmk = portable.latexmk();
+        let engine_available = latexmk.is_file();
+        let status_model = StatusModel {
+            engine_label: if engine_available {
+                rust_i18n::t!("ui.app.engine.ready").to_string()
+            } else {
+                rust_i18n::t!("ui.app.engine.missing").to_string()
+            },
+            engine_available,
+            project: startup.as_ref().map(|project| project.name.clone()),
+            ai: AiState::Stopped,
+            ..StatusModel::default()
+        };
+
+        // Layout persistido; si no parsea, default + aviso.
+        let layout = match ShellLayout::from_value(&settings.ui.dock) {
+            Ok(layout) => layout,
+            Err(err) => {
+                warnings.push(ConfigWarning::new(
+                    "ui.dock",
+                    format!("layout ilegible ({err}); se usa el layout por defecto"),
+                ));
+                ShellLayout::four_columns()
+            }
+        };
+
+        let mut root = Self {
+            portable,
+            settings,
+            warnings,
+            project: project_service,
+            status_model,
+            status_handle,
+            layout,
+            active: SlotKind::Editor,
+            dock,
+            tree,
+            editor,
+            pdf,
+            chat,
+            focus,
+            palette,
+            layout_generation: 0,
+            layout_dirty: false,
+            _status_task: status_task,
+            _dock_events: dock_events,
+            _pane_events: pane_events,
+        };
+        let layout = root.layout.clone();
+        root.apply_layout(&layout, window, cx);
+
+        // El foco arranca en la raíz para que los atajos globales siempre
+        // encuentren un `on_action` vivo.
+        let handle = root.focus.clone();
+        window.defer(cx, move |window, cx| handle.focus(window, cx));
+        root
+    }
+
+    /// Estado del layout (tests / QA).
+    pub fn layout(&self) -> &ShellLayout {
+        &self.layout
+    }
+
+    /// Panel activo según el dock.
+    pub fn active(&self) -> SlotKind {
+        self.active
+    }
+
+    /// Ajustes vivos.
+    pub fn settings(&self) -> &Settings {
+        &self.settings
+    }
+
+    /// Avisos de configuración pendientes de mostrar.
+    pub fn warnings(&self) -> &[ConfigWarning] {
+        &self.warnings
+    }
+
+    /// Entidad del dock (tests de integración).
+    pub fn dock(&self) -> &Entity<DockArea> {
+        &self.dock
+    }
+
+    /// Handle de estado que pueden usar otros paneles/servicios.
+    pub fn status_handle(&self) -> &StatusHandle {
+        &self.status_handle
+    }
+
+    // --- paneles -----------------------------------------------------------
+
+    /// Panel de una hoja como valor homogéneo para el shell.
+    fn panel(&self, kind: SlotKind) -> AnyPanel {
+        match kind {
+            SlotKind::Tree => AnyPanel::Tree(self.tree.clone()),
+            SlotKind::Editor => AnyPanel::Placeholder(self.editor.clone()),
+            SlotKind::Pdf => AnyPanel::Placeholder(self.pdf.clone()),
+            SlotKind::Chat => AnyPanel::Placeholder(self.chat.clone()),
+        }
+    }
+
+    fn on_pane_event(&mut self, event: PaneEvent, window: &mut Window, cx: &mut Context<Self>) {
+        match event {
+            PaneEvent::Activated(kind) => {
+                if self.active != kind {
+                    self.active = kind;
+                    cx.notify();
+                }
+            }
+            PaneEvent::VisibilityChanged { kind, visible } => {
+                if let Some(slot) = self.layout.slot_mut(kind) {
+                    slot.collapsed = !visible;
+                }
+                self.schedule_layout_save(cx);
+                cx.notify();
+            }
+            PaneEvent::OpenProjectRequested => self.open_project_dialog(window, cx),
+        }
+    }
+
+    // --- layout (M1-A1) -----------------------------------------------------
+
+    /// Aplica un layout: visibilidad por hoja + anchos del split central.
+    fn apply_layout(&mut self, layout: &ShellLayout, window: &mut Window, cx: &mut Context<Self>) {
+        self.layout = layout.clone();
+        for kind in SlotKind::ALL {
+            let visible = !self.layout.is_collapsed(kind);
+            self.panel(kind).set_visible(visible, cx);
+        }
+
+        let measured = self.dock.read(cx).bounds().size.width;
+        let reference = if measured > px(0.) {
+            measured
+        } else {
+            DEFAULT_REFERENCE_WIDTH
+        };
+        let sizes: Vec<Pixels> = layout
+            .sizes_px(f32::from(reference))
+            .into_iter()
+            .map(px)
+            .collect();
+        if let Some(node) = self
+            .dock
+            .read(cx)
+            .layout(DockPlacement::Center)
+            .map(|tree| tree.root().id())
+        {
+            self.dock
+                .update(cx, |dock, cx| dock.set_split_sizes(node, sizes, window, cx));
+        }
+        self.dock.update(cx, |_, cx| cx.notify());
+        cx.notify();
+    }
+
+    /// Alterna una hoja (Ctrl+Alt+1/3/4/V, toolbar o palette).
+    pub fn toggle_slot(&mut self, kind: SlotKind, window: &mut Window, cx: &mut Context<Self>) {
+        let mut layout = self.layout.clone();
+        if layout.focus.is_some() {
+            exit_focus(&mut layout);
+        }
+        if let Some(slot) = layout.slot_mut(kind) {
+            slot.collapsed = !slot.collapsed;
+        }
+        self.apply_layout(&layout, window, cx);
+        self.schedule_layout_save(cx);
+    }
+
+    /// Maximiza el panel activo o restaura los paneles (Ctrl+Alt+M).
+    pub fn toggle_focus_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut layout = self.layout.clone();
+        if layout.focus.is_some() {
+            exit_focus(&mut layout);
+        } else {
+            let active = if self.layout.is_collapsed(self.active) {
+                SlotKind::ALL
+                    .into_iter()
+                    .find(|kind| !self.layout.is_collapsed(*kind))
+                    .unwrap_or(self.active)
+            } else {
+                self.active
+            };
+            enter_focus(&mut layout, active);
+        }
+        self.apply_layout(&layout, window, cx);
+        self.schedule_layout_save(cx);
+    }
+
+    /// Sincroniza las fracciones con el dock real; `true` si cambiaron.
+    fn sync_from_dock(&mut self, cx: &App) -> bool {
+        let dump = self.dock.read(cx).dump(cx);
+        let sizes: Vec<f32> = match &dump.center.info {
+            PanelInfo::Stack { sizes, .. } => sizes.iter().map(|size| f32::from(*size)).collect(),
+            _ => Vec::new(),
+        };
+        let total: f32 = sizes.iter().sum();
+        let observed: Vec<(SlotKind, f32, bool)> = dump
+            .center
+            .children
+            .iter()
+            .enumerate()
+            .filter_map(|(index, group)| {
+                let leaf = group.children.first()?;
+                let kind = SlotKind::from_panel_name(&leaf.panel_name)?;
+                let fraction = if total > 0.0 {
+                    sizes.get(index).copied().unwrap_or(0.0) / total
+                } else {
+                    0.0
+                };
+                Some((kind, fraction, self.layout.is_collapsed(kind)))
+            })
+            .collect();
+        let observed_layout = ShellLayout::from_observed(&observed);
+
+        let mut changed = false;
+        for kind in SlotKind::ALL {
+            let (Some(current), Some(new)) = (self.layout.slot(kind), observed_layout.slot(kind))
+            else {
+                continue;
+            };
+            if (current.width_fraction - new.width_fraction).abs() > 0.0005 {
+                changed = true;
+                if let Some(slot) = self.layout.slot_mut(kind) {
+                    slot.width_fraction = new.width_fraction;
+                }
+            }
+        }
+        changed
+    }
+
+    fn on_dock_layout_changed(&mut self, cx: &mut Context<Self>) {
+        if self.sync_from_dock(cx) {
+            self.schedule_layout_save(cx);
+        }
+    }
+
+    /// Programa un guardado con debounce (la última generación gana).
+    fn schedule_layout_save(&mut self, cx: &mut Context<Self>) {
+        self.layout_dirty = true;
+        self.layout_generation = self.layout_generation.wrapping_add(1);
+        let generation = self.layout_generation;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(LAYOUT_SAVE_DEBOUNCE).await;
+            this.update(cx, |root, cx| {
+                if root.layout_dirty && root.layout_generation == generation {
+                    root.persist_layout(cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Escribe `ui.dock` en `config/settings.json` (atómico).
+    fn persist_layout(&mut self, cx: &mut Context<Self>) {
+        self.layout_dirty = false;
+        self.sync_from_dock(cx);
+        self.settings.ui.dock = self.layout.to_value();
+        match self.settings.save(&self.portable) {
+            Ok(()) => tracing::debug!(target: "lsx::ui", "layout guardado en settings.json"),
+            Err(err) => {
+                tracing::warn!(target: "lsx::ui", error = %err, "no se pudo guardar el layout");
+            }
+        }
+    }
+
+    // --- proyecto -----------------------------------------------------------
+
+    /// Diálogo "abrir proyecto": candidatos de `workspace/` + recientes.
+    pub fn open_project_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let candidates = self.project.candidates(&self.settings);
+        let current = self
+            .tree
+            .read(cx)
+            .project()
+            .map(|project| project.root.clone());
+        let weak = cx.weak_entity();
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let mut body = v_flex().gap_1();
+            if candidates.is_empty() {
+                body = body.child(
+                    div()
+                        .py_4()
+                        .text_sm()
+                        .text_center()
+                        .child(rust_i18n::t!("ui.app.project.empty").to_string()),
+                );
+            }
+            for info in &candidates {
+                let weak = weak.clone();
+                let path = info.root.clone();
+                let is_current = current.as_deref() == Some(path.as_path());
+                let mut row =
+                    Button::new(SharedString::from(format!("project-{}", path.display())))
+                        .ghost()
+                        .small()
+                        .icon(IconName::FolderClosed)
+                        .label(format!("{}   {}", info.name, path.display()))
+                        .selected(is_current);
+                row = row.on_click(move |_, window, cx| {
+                    let path = path.clone();
+                    let _ = weak.update(cx, |root, cx| {
+                        root.open_project(path, window, cx);
+                    });
+                    window.close_dialog(cx);
+                });
+                body = body.child(row);
+            }
+            dialog
+                .title(rust_i18n::t!("ui.app.project.dialog_title").to_string())
+                .width(px(560.))
+                .child(
+                    DialogDescription::new()
+                        .child(rust_i18n::t!("ui.app.project.dialog_hint").to_string()),
+                )
+                .child(body)
+        });
+    }
+
+    /// Abre un proyecto y lo recuerda en `settings.project`.
+    pub fn open_project(
+        &mut self,
+        path: std::path::PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match self.project.open(&path) {
+            Ok(info) => {
+                self.project
+                    .remember(&mut self.settings, &self.portable, &info.root);
+                let _ = self.settings.save(&self.portable);
+                self.tree
+                    .update(cx, |tree, cx| tree.set_project(info.clone(), cx));
+                self.status_model.project = Some(info.name.clone());
+                notifications::info(
+                    rust_i18n::t!("ui.app.tree.welcome", name = info.name).to_string(),
+                    window,
+                    cx,
+                );
+            }
+            Err(err) => notifications::error(err.to_string(), window, cx),
+        }
+        cx.notify();
+    }
+
+    // --- acciones de shell ---------------------------------------------------
+
+    /// Compilar (placeholder hasta M1-D2: solo informa).
+    pub fn request_compile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        notifications::info(
+            rust_i18n::t!("ui.app.toolbar.compile_pending").to_string(),
+            window,
+            cx,
+        );
+        cx.notify();
+    }
+
+    /// Abre la paleta de comandos (Ctrl+P).
+    pub fn open_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let palette = self.palette.clone();
+        let weak = cx.weak_entity();
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let weak = weak.clone();
+            dialog
+                .title(rust_i18n::t!("ui.app.palette.title").to_string())
+                .width(px(620.))
+                .child(
+                    Command::new(&palette)
+                        .items(PaletteCommand::items())
+                        .max_h(px(380.))
+                        .placeholder(rust_i18n::t!("ui.app.palette.placeholder").to_string())
+                        .on_confirm(move |index, window, cx| {
+                            let Some(command) = PaletteCommand::from_index(index.row) else {
+                                return;
+                            };
+                            let _ = weak.update(cx, |root, cx| {
+                                root.run_palette_command(command, window, cx);
+                            });
+                        }),
+                )
+        });
+        // El foco del buscador se aplica en el siguiente tick: en el momento de
+        // construir el diálogo su `Command` aún no está montado y el foco se
+        // perdería (bug detectado en la captura de QA de M1-A).
+        let palette_for_focus = self.palette.clone();
+        window.defer(cx, move |window, cx| {
+            palette_for_focus.update(cx, |state, cx| state.focus(window, cx));
+        });
+    }
+
+    /// Ejecuta un comando de la paleta.
+    pub fn run_palette_command(
+        &mut self,
+        command: PaletteCommand,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match command {
+            PaletteCommand::Compile => self.request_compile(window, cx),
+            PaletteCommand::ToggleTree => self.toggle_slot(SlotKind::Tree, window, cx),
+            PaletteCommand::ToggleEditor => self.toggle_slot(SlotKind::Editor, window, cx),
+            PaletteCommand::TogglePdf => self.toggle_slot(SlotKind::Pdf, window, cx),
+            PaletteCommand::ToggleChat => self.toggle_slot(SlotKind::Chat, window, cx),
+            PaletteCommand::ToggleFocus => self.toggle_focus_mode(window, cx),
+            PaletteCommand::OpenSettings => self.open_settings(window, cx),
+            PaletteCommand::ReloadTree => {
+                self.tree.update(cx, |tree, cx| tree.refresh(cx));
+                cx.notify();
+            }
+            PaletteCommand::OpenProject => self.open_project_dialog(window, cx),
+            PaletteCommand::PermissionDemo => self.demo_permission(window, cx),
+        }
+    }
+
+    /// Abre los ajustes (Ctrl+,).
+    pub fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let settings = self.settings.clone();
+        let weak = cx.weak_entity();
+        settings_ui::open_dialog(window, cx, settings, weak);
+    }
+
+    /// Aplica ajustes guardados desde el diálogo (validados de nuevo aquí).
+    pub fn apply_settings(
+        &mut self,
+        mut settings: Settings,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.warnings = settings.validate();
+        self.settings = settings;
+        theme::apply(&self.settings, cx);
+        match self.settings.save(&self.portable) {
+            Ok(()) => notifications::success(
+                rust_i18n::t!("ui.app.settings.saved").to_string(),
+                window,
+                cx,
+            ),
+            Err(err) => notifications::error(
+                rust_i18n::t!("ui.app.settings.save_error", error = err).to_string(),
+                window,
+                cx,
+            ),
+        }
+        cx.notify();
+    }
+
+    /// Muestra el modal de permiso de la IA con datos de demo (M1-A4).
+    pub fn demo_permission(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let receiver = PermissionCard::show(window, cx, PermissionRequest::demo());
+        cx.spawn(async move |this, cx| {
+            if let Ok(decision) = receiver.recv().await {
+                let message =
+                    rust_i18n::t!("ui.app.permission.result", decision = decision.label())
+                        .to_string();
+                let _ = this.update_in(cx, |_root, window, cx| {
+                    notifications::info(message, window, cx);
+                });
+            }
+        })
+        .detach();
+    }
+
+    // --- render ---------------------------------------------------------------
+
+    fn render_title_bar(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let project = self
+            .status_model
+            .project
+            .clone()
+            .unwrap_or_else(|| rust_i18n::t!("ui.app.status.no_project").to_string());
+        TitleBar::new().child(
+            h_flex()
+                .flex_1()
+                .items_center()
+                .px_2()
+                .gap_2()
+                .child(
+                    div()
+                        .text_sm()
+                        .child(rust_i18n::t!("ui.app.title").to_string()),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(project),
+                ),
+        )
+    }
+
+    fn render_toolbar(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let project_name = self
+            .status_model
+            .project
+            .clone()
+            .unwrap_or_else(|| rust_i18n::t!("ui.app.status.no_project").to_string());
+        let weak = cx.weak_entity();
+        let recents = self.project.candidates(&self.settings);
+        let current_root = self.tree.read(cx).project().map(|p| p.root.clone());
+
+        let project_button = Button::new("toolbar-project")
+            .icon(IconName::FolderOpen)
+            .label(project_name)
+            .small()
+            .ghost()
+            .tooltip(rust_i18n::t!("ui.app.toolbar.open_folder").to_string())
+            .on_click(cx.listener(|this, _, window, cx| this.open_project_dialog(window, cx)));
+
+        let mut project_menu = DropdownButton::new("toolbar-project-menu").button(project_button);
+        project_menu = project_menu.dropdown_menu(move |mut menu, _window, _cx| {
+            menu = menu.item(
+                PopupMenuItem::new(rust_i18n::t!("ui.app.toolbar.open_folder").to_string())
+                    .icon(IconName::FolderOpen)
+                    .on_click({
+                        let weak = weak.clone();
+                        move |_, window, cx| {
+                            let _ =
+                                weak.update(cx, |root, cx| root.open_project_dialog(window, cx));
+                        }
+                    }),
+            );
+            if !recents.is_empty() {
+                menu = menu.separator().item(
+                    PopupMenuItem::new(rust_i18n::t!("ui.app.toolbar.recents").to_string())
+                        .disabled(true),
+                );
+                for info in &recents {
+                    let weak = weak.clone();
+                    let path = info.root.clone();
+                    let is_current = current_root.as_deref() == Some(path.as_path());
+                    let mut item = PopupMenuItem::new(info.name.clone())
+                        .icon(IconName::FolderClosed)
+                        .checked(is_current);
+                    item = item.on_click(move |_, window, cx| {
+                        let path = path.clone();
+                        let _ = weak.update(cx, |root, cx| root.open_project(path, window, cx));
+                    });
+                    menu = menu.item(item);
+                }
+            }
+            menu
+        });
+
+        let mut toggles = h_flex().items_center().gap_1();
+        for kind in SlotKind::ALL {
+            let collapsed = self.layout.is_collapsed(kind);
+            toggles = toggles.child(toolbar::slot_toggle(
+                cx,
+                kind,
+                collapsed,
+                cx.listener(move |this, _, window, cx| this.toggle_slot(kind, window, cx)),
+            ));
+        }
+
+        h_flex()
+            .flex_none()
+            .h(px(toolbar::HEIGHT))
+            .px_2()
+            .gap_2()
+            .items_center()
+            .bg(cx.theme().title_bar)
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(project_menu)
+            .child(toolbar::separator(cx))
+            .child(toolbar::compile_button(
+                rust_i18n::t!("ui.app.toolbar.compile").to_string(),
+                self.status_model.compile.is_busy(),
+                cx.listener(|this, _, window, cx| this.request_compile(window, cx)),
+            ))
+            .child(toolbar::engine_indicator(
+                cx,
+                &self.status_model.engine_label.clone(),
+                self.status_model.engine_available,
+            ))
+            .child(div().flex_1())
+            .child(toggles)
+            .child(toolbar::separator(cx))
+            .child(toolbar::icon_button(
+                cx,
+                "toolbar-focus",
+                IconName::Maximize,
+                if self.layout.focus.is_some() {
+                    rust_i18n::t!("ui.app.toolbar.focus_exit").to_string()
+                } else {
+                    rust_i18n::t!("ui.app.toolbar.focus_enter").to_string()
+                },
+                self.layout.focus.is_some(),
+                cx.listener(|this, _, window, cx| this.toggle_focus_mode(window, cx)),
+            ))
+            .child(toolbar::separator(cx))
+            .child(toolbar::icon_button(
+                cx,
+                "toolbar-settings",
+                IconName::Settings,
+                rust_i18n::t!("ui.app.toolbar.settings").to_string(),
+                false,
+                cx.listener(|this, _, window, cx| this.open_settings(window, cx)),
+            ))
+            .child(toolbar::icon_button(
+                cx,
+                "toolbar-palette",
+                IconName::Search,
+                rust_i18n::t!("ui.app.toolbar.palette").to_string(),
+                false,
+                cx.listener(|this, _, window, cx| this.open_palette(window, cx)),
+            ))
+            .child(toolbar::icon_button(
+                cx,
+                "toolbar-permission-demo",
+                IconName::ShieldCheck,
+                rust_i18n::t!("ui.app.toolbar.permission_demo").to_string(),
+                false,
+                cx.listener(|this, _, window, cx| this.demo_permission(window, cx)),
+            ))
+    }
+}
+
+/// Panel homogéneo para el shell (el dock los mantiene como entidades propias).
+enum AnyPanel {
+    Tree(Entity<TreePanel>),
+    Placeholder(Entity<PlaceholderPanel>),
+}
+
+impl AnyPanel {
+    fn set_visible(&self, visible: bool, cx: &mut App) {
+        match self {
+            AnyPanel::Tree(panel) => {
+                panel.update(cx, |panel, cx| panel.set_visible(visible, cx));
+            }
+            AnyPanel::Placeholder(panel) => {
+                panel.update(cx, |panel, cx| panel.set_visible(visible, cx));
+            }
+        }
+    }
+}
+
+/// Entra en focus mode sobre `active`: oculta el resto y guarda sus anchos.
+///
+/// Devuelve `true` si entró (siempre, por ahora: incluso sin hojas que ocultar
+/// el modo queda registrado y Ctrl+Alt+M lo deshace).
+pub fn enter_focus(layout: &mut ShellLayout, active: SlotKind) -> bool {
+    if layout.focus.is_some() {
+        return false;
+    }
+    let mut hidden = Vec::new();
+    let mut fractions = Vec::new();
+    for kind in SlotKind::ALL {
+        if kind == active {
+            continue;
+        }
+        let Some(slot) = layout.slot(kind) else {
+            continue;
+        };
+        if slot.collapsed {
+            continue;
+        }
+        hidden.push(slot.id.clone());
+        fractions.push(slot.width_fraction);
+    }
+    for id in &hidden {
+        if let Some(kind) = SlotKind::from_id(id)
+            && let Some(slot) = layout.slot_mut(kind)
+        {
+            slot.collapsed = true;
+        }
+    }
+    layout.focus = Some(FocusMode {
+        hidden,
+        previous_fractions: fractions,
+    });
+    true
+}
+
+/// Sale del focus mode: restaura visibilidad y fracciones previas.
+pub fn exit_focus(layout: &mut ShellLayout) -> bool {
+    let Some(focus) = layout.focus.take() else {
+        return false;
+    };
+    for (id, fraction) in focus.hidden.iter().zip(focus.previous_fractions.iter()) {
+        let Some(kind) = SlotKind::from_id(id) else {
+            continue;
+        };
+        let Some(slot) = layout.slot_mut(kind) else {
+            continue;
+        };
+        slot.collapsed = false;
+        if fraction.is_finite() && *fraction > 0.0 {
+            slot.width_fraction = *fraction;
+        }
+    }
+    true
+}
+
+impl Render for AppRoot {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .size_full()
+            .bg(cx.theme().background)
+            .text_color(cx.theme().foreground)
+            .id("app-root")
+            .track_focus(&self.focus)
+            .key_context("LxStudio")
+            .on_action(cx.listener(|this, _: &ToggleTreePane, window, cx| {
+                this.toggle_slot(SlotKind::Tree, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &TogglePdfPane, window, cx| {
+                this.toggle_slot(SlotKind::Pdf, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ToggleChatPane, window, cx| {
+                this.toggle_slot(SlotKind::Chat, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ToggleFocusMode, window, cx| {
+                this.toggle_focus_mode(window, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &OpenPalette, window, cx| this.open_palette(window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &OpenSettingsPane, window, cx| {
+                    this.open_settings(window, cx)
+                }),
+            )
+            .child(self.render_title_bar(window, cx))
+            .child(self.render_toolbar(window, cx))
+            .child(div().flex_1().min_h_0().child(self.dock.clone()))
+            .child(status_bar::render(&self.status_model, cx))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn collapsed(layout: &ShellLayout) -> Vec<SlotKind> {
+        SlotKind::ALL
+            .into_iter()
+            .filter(|kind| layout.is_collapsed(*kind))
+            .collect()
+    }
+
+    #[test]
+    fn focus_mode_hides_the_other_visible_panels_and_restores_them() {
+        let mut layout = ShellLayout::four_columns();
+        layout.slot_mut(SlotKind::Chat).unwrap().collapsed = true;
+        layout.slot_mut(SlotKind::Tree).unwrap().width_fraction = 0.33;
+
+        assert!(enter_focus(&mut layout, SlotKind::Editor));
+        assert_eq!(
+            collapsed(&layout),
+            [SlotKind::Tree, SlotKind::Pdf, SlotKind::Chat]
+        );
+        let focus = layout.focus.as_ref().expect("focus registrado");
+        assert_eq!(focus.hidden, ["tree", "pdf"]);
+        assert_eq!(focus.previous_fractions.len(), 2);
+
+        assert!(exit_focus(&mut layout));
+        assert_eq!(collapsed(&layout), [SlotKind::Chat]);
+        assert!((layout.slot(SlotKind::Tree).unwrap().width_fraction - 0.33).abs() < 1e-6);
+        assert!(layout.focus.is_none());
+    }
+
+    #[test]
+    fn focus_mode_is_a_no_op_when_already_active() {
+        let mut layout = ShellLayout::four_columns();
+        assert!(enter_focus(&mut layout, SlotKind::Pdf));
+        assert!(!enter_focus(&mut layout, SlotKind::Tree));
+        assert_eq!(
+            layout.focus.as_ref().unwrap().hidden,
+            ["tree", "editor", "chat"]
+        );
+        assert!(exit_focus(&mut layout));
+        assert!(!exit_focus(&mut layout));
+    }
+
+    #[test]
+    fn focus_mode_keeps_panels_collapsed_before_the_maximization() {
+        let mut layout = ShellLayout::four_columns();
+        layout.slot_mut(SlotKind::Tree).unwrap().collapsed = true;
+        layout.slot_mut(SlotKind::Chat).unwrap().collapsed = true;
+        enter_focus(&mut layout, SlotKind::Editor);
+        assert_eq!(layout.focus.as_ref().unwrap().hidden, ["pdf"]);
+        exit_focus(&mut layout);
+        // El árbol ya estaba colapsado antes: sigue colapsado.
+        assert_eq!(collapsed(&layout), [SlotKind::Tree, SlotKind::Chat]);
+    }
+
+    #[test]
+    fn the_warning_list_starts_with_the_dock_parse_issue() {
+        let warning = ConfigWarning::new("ui.dock", "layout ilegible");
+        assert_eq!(warning.key, "ui.dock");
+    }
+}

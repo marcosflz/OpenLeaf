@@ -12,3 +12,6 @@ camino.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 notify.workspace = true
+# M1-A0: bus de eventos genérico (`events::EventBus`). async_channel no ata el
+# crate a ningún runtime (a diferencia de tokio).
+async-channel.workspace = true
