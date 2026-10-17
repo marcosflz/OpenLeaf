@@ -169,6 +169,12 @@ pub async fn start(spec: &ServerSpec, health_timeout: Duration) -> Result<Runnin
         .stderr(Stdio::null())
         // Red de seguridad (además del job): si el handle se cae sin stop().
         .kill_on_drop(true);
+    // `opencode serve` es una app de consola: sin ventana de consola visible.
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
     if let Some(password) = &spec.password {
         command.env("OPENCODE_SERVER_PASSWORD", password);
     }
@@ -265,10 +271,13 @@ fn terminate(child: &mut Child, job: Option<&JobObject>) {
         #[cfg(windows)]
         {
             let pid = child.id().map(|id| id.to_string()).unwrap_or_default();
+            use std::os::windows::process::CommandExt as _;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
             let _ = std::process::Command::new("taskkill")
                 .args(["/F", "/T", "/PID", &pid])
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
+                .creation_flags(CREATE_NO_WINDOW)
                 .status();
         }
     }

@@ -258,10 +258,12 @@ fn kill_tree(child: &mut Child, job: Option<&JobObject>) {
             job.terminate();
         } else {
             let pid = child.id().to_string();
+            use std::os::windows::process::CommandExt as _;
             let _ = Command::new("taskkill")
                 .args(["/F", "/T", "/PID", &pid])
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
+                .creation_flags(CREATE_NO_WINDOW)
                 .status();
         }
     }
