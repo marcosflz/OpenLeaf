@@ -1,41 +1,41 @@
 # Gates vivos — riesgos y decisiones de interfaz
 
 > Checklist viva. Los gates (G0–G3) firman aquí + en `docs/qa/reports/`.
-> Fuentes: `docs/plan/PLAN-MAESTRO.md` §7 (riesgos R*) e `docs/plan/INTERFACES.md` §11 (decisiones I*).
+> Fuentes: `docs/plan/PLAN-MAESTRO.md` §7 (riesgos R*) e `docs/plan/INTERFACES.md` §11/§12 (decisiones I*).
 
 ## Riesgos
 
 | ID | Riesgo | Se verifica en | Estado | Notas |
 |----|--------|----------------|--------|-------|
-| R1 | Breaking changes de snapshots GPUI | bump M3-8 / mensual | abierto | Pin `=0.7.3` (gpui-pre 0.3.9) |
-| R2 | Editor del kit no cubre necesidades (grammar LaTeX, diagnósticos) | M0-S2 → G0 | abierto | Fallback: highlighter propio sobre Input/Textarea |
-| R3 | Rendimiento PDF (hayro) | M0-S3 → G0/G1 | abierto | Fallback: pdfium-render tras trait |
-| R4 | Formato de `synctex.exe` entre versiones | M0-S5 → G1 | abierto | Parser tolerante + fixtures de la versión embebida |
-| R5 | Deriva API opencode v1→v2 | continuo | abierto | Aislamiento en `protocol.rs` + fixtures |
+| R1 | Breaking changes de snapshots GPUI | bump M3-8 / mensual | abierto | Pin `=0.7.3` (gpui-pre 0.3.9) compilando en Windows (stable 1.98) ✓ |
+| R2 | Editor del kit no cubre necesidades | M0-S2 → G0 | ✅ **resuelto (M0-S2)** | Registro de lenguajes + diagnósticos inline + buffer del kit; pestañas app-side; fallback innecesario |
+| R3 | Rendimiento PDF (hayro) | M0-S3 → G0/G1 | ✅ **resuelto (M0-S3)** | p50 release 4–8 ms a 1.0–2.0× (budget <120 ms); visor propio confirmado |
+| R4 | Formato de `synctex.exe` entre versiones | M0-S5 → G1 | ✅ **resuelto (M0-S5)** | Formato real fijado + round-trip 78↔79 (±1) con tests; fixtures `fixtures/synctex/` |
+| R5 | Deriva API opencode v1→v2 | continuo | mitigado (M0-S4) | Tabla I-4 congelada + fixtures + aislamiento `protocol.rs`; vigilar upgrades |
 | R6 | AGENTS.md del repo contaminando al agente del producto | M1 → G1 | abierto | Proyectos viven en `workspace/`; test explícito + plan B |
-| R7 | Compilaciones concurrentes/procesos pegados | M1-D → G1 | abierto | Single-flight + timeout + job objects |
-| R8 | Windows: rutas largas/acentos/antivirus | M1-A/F → G1 | abierto | Retry rename, tests con acentos/espacios |
+| R7 | Compilaciones concurrentes/procesos pegados | M1-D1 → G1 | abierto | Job objects pendientes (spike usa `taskkill /T`) |
+| R8 | Windows: rutas largas/acentos/antivirus | M1-A/F → G1 | abierto | Falta test con acentos/espacios en gates |
 | R9 | Deriva de dependencias (tamaño/duplicados) | mensual | abierto | `cargo tree -d`, features mínimas |
 | R10 | Parálisis por detalles UI | continuo | abierto | Backlog M4 sin discusión |
 
-## Decisiones de interfaz
+## Decisiones de interfaz — todas resueltas en M0 (evidencia en INTERFACES §11/§12)
 
-| ID | Pregunta | Default del plan | Se decide en | Estado |
-|----|----------|------------------|--------------|--------|
-| I-1 | ¿Editor del kit expone modelo de archivo + rangos + registry de lenguajes? | Sí (spike S2) | G0 | abierto |
-| I-2 | Render propio `lsx-pdf` + `RenderImage` (no adoptar gpui-pdf GPL) | Render propio | G0 | abierto |
-| I-3 | ¿Buffer propio ropey o del componente? | El del componente | G0 | abierto |
-| I-4 | Nombres exactos de eventos SSE y campos de `parts` | Tabla congelada con fixtures | G0 (S4) | abierto |
-| I-5 | Puerto/instancia opencode por proyecto o global | Global, cwd = proyecto activo | G0 | abierto |
-| I-6 | ¿`gpui-fast`? | No en v1 | G0 | abierto |
-| I-7 | ¿Dock fijo 4 hojas o dockable libre? | Fijo 4 hojas (sin drag entre paneles) | G0 | abierto |
+| ID | Resolución | Estado |
+|----|-----------|--------|
+| I-1 | Editor del kit: lenguajes custom + diagnósticos ✓; pestañas app-side | ✅ M0-S2 |
+| I-2 | Visor propio con `RenderImage` (BGRA, w/dpr); gpui-pdf descartado (GPL) | ✅ M0-S3 |
+| I-3 | Buffer del componente (`Rope`); ropey fuera del editor | ✅ M0-S2 |
+| I-4 | Tabla SSE congelada con fixtures reales; sin Last-Event-ID → refetch | ✅ M0-S4 |
+| I-5 | Instancia global + `?directory=` por sesión | ✅ M0-S4 |
+| I-6 | `gpui-fast` no en v1 | ✅ decisión firme |
+| I-7 | Dock del kit, 4 hojas fijas, colapso vía `Panel::visible`, persistencia dump/load | ✅ M0-S1 |
 
 ## Registro de gates
 
 | Gate | Fecha | Verdicto | Informe | Pendientes |
 |------|-------|----------|---------|-----------|
-| P0 | 2026-10-17 | ✅ PASS | `docs/qa/reports/P0-2026-10-17.md` | P0.4b remoto+push; `xtask fixtures`; `fixtures/opencode` (S4) |
-| G0 | — | — | — | — |
+| P0 | 2026-10-17 | ✅ PASS | `docs/qa/reports/P0-2026-10-17.md` | P0.4b remoto+push; `xtask fixtures` |
+| G0 | pendiente | — | informes `docs/qa/reports/M0-S{1..6}-*.md` + demos ejecutables | **revisión con el usuario** (demos + freeze); tras G0 → O2 (M1) |
 | G1 | — | — | — | — |
 | G2 | — | — | — | — |
 | G3 | — | — | — | — |

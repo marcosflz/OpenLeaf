@@ -343,17 +343,17 @@ UI ◄── AppEvent (async_channel) ◄── servicios        ◄── reduc
 
 ---
 
-## 11. Decisiones de interfaz registradas (resolver en M0, gate G0)
+## 11. Decisiones de interfaz registradas — **RESUELTAS en M0 (freeze en G0)**
 
-| # | Pregunta | Default del plan | Gate |
-|---|---|---|---|
-| I-1 | ¿El editor del kit expone modelo de archivo + rangos de diagnóstico + registro de lenguajes? | Sí (demo spike S2) | G0 |
-| I-2 | ¿Usamos `RenderImage` directo o el componente pdf del kit (no hay) → render propio? | Render propio `lsx-pdf` + `RenderImage` | G0 |
-| I-3 | ¿Buffer propio con ropey o el del componente? | El del componente; ropey solo si falla | G0 |
-| I-4 | Nombres exactos de eventos SSE y campos de `parts` | Tabla §5.3 congelada con fixtures | G0 |
-| I-5 | Puerto/instancia de opencode por proyecto o global | Global por app, cwd = proyecto activo | G0 |
-| I-6 | ¿`gpui-fast`? | No en v1 | G0 |
-| I-7 | ¿Dock como layout fijo 4 o dockable libre? | Dock del kit con 4 hojas fijas (sin drag de pestañas entre paneles en v1) | G0 |
+| # | Pregunta | Resolución (evidencia) |
+|---|---|---|
+| I-1 | ¿El editor del kit expone modelo de archivo + rangos de diagnóstico + registro de lenguajes? | **Sí** registro de lenguajes custom y diagnósticos inline; **no** hay modelo de archivo/pestañas → pestañas las gestiona la app (`TabBar` + N `Entity<EditorState>`) (M0-S2) |
+| I-2 | ¿`RenderImage` directo o componente pdf del kit? | **Visor propio** `lsx-pdf` + `RenderImage` (BGRA en Windows; tamaño lógico `w/dpr`). `gpui-pdf` descartado por GPL (M0-S3) |
+| I-3 | ¿Buffer propio con ropey o el del componente? | **El del componente** (`Rope`); ropey directo solo fuera del editor (M0-S2) |
+| I-4 | Nombres exactos de eventos SSE y campos de `parts` | **Congelados** en §12 con fixtures reales; sin `Last-Event-ID` → refetch de historial (M0-S4) |
+| I-5 | Puerto/instancia de opencode por proyecto o global | **Global por app** + `POST /session?directory=<abs>` por sesión (M0-S4) |
+| I-6 | ¿`gpui-fast`? | **No en v1** (decisión firme) |
+| I-7 | ¿Dock fijo 4 hojas o dockable libre? | **Dock del kit con 4 hojas fijas**; colapso por hoja vía `Panel::visible`; persistencia con `DockArea::dump/load` + esquema §7 (M0-S1) |
 
 ---
 
