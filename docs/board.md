@@ -38,11 +38,25 @@
 
 | Panel | Objetivo | Sesión | Estado |
 |---|---|---|---|
-| Árbol / Explorer | Estilo **VS Code Explorer** (filas 22px, 13px, iconos 16px, toolbar compacto icon-only, panel de salida mono) | ses_eb5ee3e54ffecKAx6BqKH8Qqom | DOING |
-| Chat | Estilo **GitHub Copilot Chat** (sin burbujas, tool cards finas, composer) + **modo replay determinista** (sin tokens) | ses_eb5ee3e52ffej5X95550JhBmV3 | DOING |
+| Árbol / Explorer | Estilo **VS Code Explorer** (filas 22px, 13px, iconos 16px, toolbar compacto icon-only, panel de salida mono) | ses_eb5ee3e54ffecKAx6BqKH8Qqom | ✅ DONE (`shots\tree-after.png`, verificado por orchestrator) |
+| Chat | Estilo **GitHub Copilot Chat** (sin burbujas, tool cards finas, composer) + **modo replay determinista** | ses_eb5ee3e52ffej5X95550JhBmV3 | ✅ DONE (`shots\chat-after.png`, verificado por orchestrator) |
 
-- Herramienta de evidencia visual: `scripts/capture-window.ps1` (DPI-aware, flota la ventana topmost sin robar foco) + `shots/` (ignorado por git). Receta añadida al skill `lsx-quality-gates`.
-- **Gate**: revisión visual del usuario de `shots\tree-after.png` y `shots\chat-after.png`; tras el visto bueno → ola O2 (M1).
+- Commits: `b39a9aa` (restyle) · `3904d4e` (fixtures live extra) · gates workspace fmt/clippy/test verdes tras el pulido.
+- Herramienta de evidencia: `scripts/capture-window.ps1` (topmost, DPI-aware) — receta en skill `lsx-quality-gates`.
+
+## M1 — Núcleo usable (ola O2 lanzada 2026-10-17; 4 streams ∥)
+
+**Desviación ratificada**: streams sobre `main` con **propiedad estricta de archivos** (sin worktrees) para compartir `target/` y evitar 4 rebuilds completos de GPUI; reglas: nunca git, `rustfmt` solo propios, gates por crate, evidencia visual con captura.
+
+| Stream | Territorio | Tareas | Sesión | Estado |
+|---|---|---|---|---|
+| **A** shell/UX | `crates/ui/**`, `app/src/main.rs`, `app/src/bin/spike-shell.rs`, `lsx-core::{root,config,events}` (M1-A0) | A0 + A1..A6 + integración árbol real | ses_eb5b77d76ffeaY8fTWI6zM9E8E | DOING |
+| **B** editor | `crates/editor/**`, `crates/ui/src/panels/editor.rs`, `app/src/bin/spike-editor.rs` | B1..B5 | ses_eb5b77d74ffexNMHalgSmSMOgq | DOING |
+| **C** PDF | `crates/pdf/**`, `crates/ui/src/panels/pdf.rs`, `app/src/bin/spike-pdf.rs` | C1..C4 (+ multipage fixture) | ses_eb5b77d73ffeHE0xX4Xi1k4qgJ | DOING |
+| **D** latex | `crates/latex/**`, `crates/ui/src/panels/problems.rs` | D1..D5 | ses_eb5b77d71ffejCS2L6SG3WcPiO | DOING |
+| **E** chat · **F** fs | en cola (O3, tras liberar slot) | M1-E*, M1-F* | — | TODO |
+
+Gate de salida: **G1** (E2E pasos 1–8 + presupuestos §6.3) — requiere también E/F; el orchestrator integra los paneles en el shell conforme aterrizan.
 | M0-S6 | fs/watcher + tree component | ✅ DONE | informe: `docs/qa/reports/M0-S6-spike-fs.md` · list_dir 5,6 ms/5k · tree sin evento de selección (→ M1-F2) |
 | M0-G0 | Freeze `INTERFACES.md` | TODO | orchestrator, al cerrar S1–S6 — requiere revisión del usuario |
 
