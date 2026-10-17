@@ -1,57 +1,59 @@
 ---
 name: lsx-latex-engine
-description: Usar cuando se trabaje en el motor LaTeX (stream D, crate lsx-latex) — rutas y comandos de latexmk, synctex, biber y tlmgr en tex/bin/windows, args por defecto con -synctex=1, contrato y fixtures del LogParser, flujo de auto-instalación de paquetes, cola single-flight con generaciones, timeout, cancelación y job objects. Enlaza a docs/plan/INTERFACES.md §3 y docs/plan/PLAN-MAESTRO.md §5.6.
+description: Usar cuando se trabaje en el motor LaTeX (stream D, crate lsx-latex) — rutas y comandos verificados de latexmk, synctex, biber y tlmgr en tex/bin/windows, args con -outdir y el rerun -g tras auto-install, semántica REAL de la salida de synctex (bp, Line 1-based, always-exit-0), contrato y fixtures del LogParser, flujo de auto-instalación de paquetes y pendientes de M1 (job objects, CompileQueue). Enlaza a docs/plan/INTERFACES.md §3 y §12.
 ---
 
 # Motor LaTeX (TeX Live portátil)
 
-Datos verificados en el repo: existen `tex\bin\windows\latexmk.exe`, `synctex.exe`, `biber.exe` y `tlmgr.bat` (TeX Live 2026 embebido). Nunca editar `tex\` a mano; solo invocarlo.
-Contrato: `docs/plan/INTERFACES.md` §3. Flujo del plan: `docs/plan/PLAN-MAESTRO.md` §5.6.
+Datos verificados en el repo (M0-S5): `tex\bin\windows\{latexmk.exe, synctex.exe, biber.exe, tlmgr.bat}` (TeX Live 2026 embebido). Nunca editar `tex\` a mano; solo invocarlo.
+Contrato: `docs/plan/INTERFACES.md` §3 + hallazgos §12 (M0-S5). Flujo del plan: `docs/plan/PLAN-MAESTRO.md` §5.6.
 
-## Rutas (vía `PortableRoot`)
+## Rutas
 
 | Helper | Ruta |
 |---|---|
-| `latexmk()` | `tex\bin\windows\latexmk.exe` |
-| `synctex_exe()` | `tex\bin\windows\synctex.exe` |
-| `tex_dir()` | `tex\` (raíz del árbol TeX Live) |
-| tlmgr | `tex\bin\windows\tlmgr.bat` — `TODO(M0-S5): verificar` invocación portátil exacta y si necesita env vars (TEXMFCONFIG/TEXMFHOME) |
+| latexmk | `tex\bin\windows\latexmk.exe` (v4.88 verificado) |
+| synctex | `tex\bin\windows\synctex.exe` (CLI 1.5) |
+| tlmgr | `tex\bin\windows\tlmgr.bat` — **siempre exit 0**: decidir éxito/FALLO parseando la salida |
+| root | `TexLivePaths::detect()` (spike) — env `LSX_TEX_BIN` → `LATESTUDIO_ROOT` → ancestros; M1 lo sustituye `PortableRoot` |
 
-## Compilación
+## Compilación (verificado)
 
-- Args por defecto (`CompileRequest.args`): `-synctex=1 -interaction=nonstopmode -file-line-error -pdf -outdir=<proyecto> <main.tex>` (PLAN §5.6 / INTERFACES §3).
-- Limpiar auxiliares (F5): `latexmk -c` con confirmación (M1-D5); `-C` solo con confirmación explícita (borra el PDF).
-- Detección de `main.tex`: settings `latex.mainFile` → archivo abierto con `\documentclass` → `\input` raíz → único `.tex` con `\documentclass` (PLAN §5.6; heurística en M1-D5).
-- `probe()`: versión + disponibilidad del motor para el badge del toolbar (`EngineInfo`).
-- Integración real: `$env:LSX_TEST_TEXLIVE="1"; cargo nextest run -p lsx-latex` (requiere `tex\`).
+- Args: `-pdf -synctex=1 -interaction=nonstopmode -file-line-error -outdir=<abs> <main>`. **Todo** cae al outdir (pdf/log/synctex/aux); cwd = proyecto; incremental reutiliza `.fdb_latexmk`.
+- Exit codes: `0` ok; **`12`** error TeX (undefined genera PDF igualmente; missingpkg no).
+- **CRÍTICO — rerun post-auto-install: usar `latexmk -g`** (sin `-g` da "up-to-date" tras un fallo y el fix "no repara").
+- stdout sin % de progreso: solo `Latexmk: …` y `Output written on … (N páginas, M bytes)` → `LogHint::Output{pages,bytes}`; el progreso de UI va por elapsed (M1-D2).
+- Limpiar auxiliares: `latexmk -c` con confirmación; `-C` solo explícito (borra PDF) (M1-D5).
+- Tests reales: `$env:LSX_TEST_TEXLIVE="1"; cargo test -p lsx-latex -- --nocapture` (cv ≈ 3.4 s).
 
-## Synctex CLI
+## Synctex CLI (semántica REAL — no re-descubrir)
 
-- Forward (cursor → PDF): `synctex view -i línea:col:archivo -o main.pdf` (PLAN §4.3).
-- Inverse (PDF → origen): `synctex edit -o página:x:y:main.pdf` (PLAN §4.3).
-- Unidades: bp (1/72"), origen arriba-izquierda; parseo tolerante entre `SyncTeX result begin…end`; timeout 2 s; ejecutar en `spawn_blocking`; cachear el último resultado por (pdf, generation) (INTERFACES §3).
-- `TODO(M0-S5): verificar` el formato de salida real de `synctex.exe` embebido y fijarlo con fixtures (`fixtures/synctex/` aún no existe en el repo; se crea en M0).
+- Forward: `synctex view -i línea:col:[página:]archivo -o main.pdf` → bloques `SyncTeX result begin/end` con `Page`, `x`,`y` (punto), `h`,`v` (borde izq. y línea base), `W`,`H` (caja). **La línea de entrada y `Line:` de la salida son 1-based**; columna de entrada `0` = no relevante; salida `Column:-1` = desconocida.
+- Inverse: `synctex edit -o "página:x:y:main.pdf"` → `Input:` (**normalizar**: viene con `/./`), `Line:`.
+- Unidades **bp, origen arriba-izquierda** (round-trip exacto ±1 línea verificado: 78 ↔ 79). Para **resaltar** usar la CAJA `(h, v−H)..(h+W, v)` — difiere ~3 bp del punto.
+- **El CLI siempre exit 0**: pre-validar sidecar `<pdf>.synctex.gz|.synctex` junto al PDF → si no, `NotAvailable`; resultado vacío → `NoMatch`; `src` inexistente → warning + lista vacía.
+- `view` devuelve N registros (el 1º es el más preciso). Latencia ~50 ms real. **CLI suficiente para M1-C4**; parser nativo `.synctex.gz` = optimización M4-9. El sidecar debe ir junto al PDF (sin `-d` en CLI): nuestro `-outdir` lo garantiza.
+- API: `Synctex::new(exe)` + `forward`/`forward_all`/`inverse`; `SyncRecord{page,x,y,h,v,width,height}`; `SourcePoint.column: Option<u32>`.
 
 ## LogParser
 
-- API: `parse_log(&str) -> Vec<Diagnostic>` (tolerante, cap 8 MB, analiza el último run desde `Job started:`) y `parse_stdout_stream(line) -> Option<LogHint>` para progreso en vivo.
-- `DiagnosticKind`: `MissingPackage{package}`, `LatexError`, `BibError`, `UndefinedRef`, `Overfull`, `RerunNeeded`, `Unknown`; severidad `Error`/`Warning`/`Info`; con `file`/`line`/`column` gracias a `-file-line-error`; conservar `raw_block`.
-- Corpus de tests: `fixtures/logs/*.log` (4 tipos de error reales) con snapshots `insta` — `TODO(P0.6/M0): verificar` que la carpeta `fixtures/logs/` aún no está en el repo; no romper los tests si falta.
+- API: `parse_log(&str) -> Vec<Diagnostic>` (tolerante, cap 8 MB, último run desde `Job started:`, dedupe, `raw_block`) y `parse_stdout_stream(line) -> Option<LogHint>`.
+- `DiagnosticKind`: `MissingPackage{package}`, `LatexError`, `BibError`, `UndefinedRef`, `Overfull`, `RerunNeeded`, `Unknown`; severidades Error/Warning/Info; `file`/`line`/`column` gracias a `-file-line-error` (verificado: `main.tex:4`).
+- Corpus: `fixtures/logs/{cv-ok, cv-sidebar-ok, missing-package, undefined-command}.log` (existen; tests en `crates/latex/tests/logparse.rs`). **Sin `insta` en deps** (asserts directos); snapshots = mejora opcional M1-D3.
+- Pendientes M1-D3: `BibError` mínimo, `Underfull`, severidad `Info`, bloques multi-línea heurísticos.
 
 ## Auto-install tlmgr
 
-- Si hay `MissingPackage` y `latex.autoInstallPackages=true` → `tex\bin\windows\tlmgr.bat install <paquete>` → rerun; tope 3 intentos por sesión; registrar `PackageInstall[]` en `CompileOutcome`; banner de progreso (M1-D4).
-- Fixtures: `fixtures/projects/broken-missingpkg` (falta paquete) y `broken-undefined` (error de código) ya existen.
-- No instalar a ciegas: verificar el nombre del paquete (`kpsewhich`/`tlmgr`) antes de reintentar.
+- Flujo: `MissingPackage` + `latex.autoInstallPackages=true` → `tlmgr install <pkg>` (parsear salida; fallback automático `--force` si "tlmgr itself needs to be updated") → **rerun con `-g`** → tope 3 intentos; registrar `PackageInstall[]`.
+- Verificado con **`adjmulticol`** (test doble-gated `LSX_TEST_TEXLIVE=1` + `LSX_TEST_TLMGR_INSTALL=1`; reinstalado, estado final = inicial).
+- Distro vs tlnet desalineada en esta máquina → M3 considera `tlmgr update --self` o pin de repo.
 
-## Cola, timeout y procesos
+## Cola, timeout y procesos (pendientes M1)
 
-- `CompileQueue`: single-flight + coalescing (si llegan cambios mientras compila → 1 rerun); `submit(CompileRequest) -> generation`; `cancel(generation)`; estados `Idle → Queued → Running → Success/Failed/Cancelled`.
-- `CompileEvent`: `Queued`, `Started{generation}`, `Progress{line}`, `Finished{generation, outcome}`, `Cancelled{generation}`.
-- Timeout default 600 s (settings `latex.timeoutSecs`); cancelación con `CancelToken` (AtomicBool + broadcast); kill-on-drop + **job object kill-on-close** para latexmk/biber/tlmgr (PLAN §5.3; criterio G1: sin procesos huérfanos).
-- `TODO(M0-S5): verificar` el formato real de stdout de `latexmk` para progreso (%, páginas) — si no hay, usar elapsed.
+- `CompileQueue` (single-flight, coalescing, generaciones `submit/cancel`, estados `Idle→Queued→Running→Finished/Cancelled`) → **M1-D2** (el spike emite `generation=0`).
+- Timeout 600 s; `CancelToken`; el spike mata con `taskkill /T` → **M1-D1 migra a job objects + `CREATE_NO_WINDOW`** (criterio G1: sin huérfanos). Falta test de cancelación con compile realmente colgado.
 
 ## Salida y errores
 
-- `CompileOutcome { status, duration, pdf, log_tail (~200 líneas), diagnostics, package_installs }`.
-- Mensajes de usuario en español; detalles técnicos en `tracing` (targets `lsx::latex`).
+- `CompileOutcome { status, duration, pdf, log: Option<Path>, exit_code: Option<i32>, log_tail, diagnostics, package_installs }`.
+- Mensajes de usuario en español; detalles técnicos en `tracing` (target `lsx::latex`).
