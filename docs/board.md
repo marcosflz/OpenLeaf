@@ -22,11 +22,17 @@
 |------|--------|------|
 | P0 | ✅ CERRADO 2026-10-17 | Informe: `docs/qa/reports/P0-2026-10-17.md`; gates locales verdes (fmt/clippy/test); CI remota pendiente de P0.4b (no bloquea) |
 
-## M0 — Spikes (⏸ bloqueado hasta confirmación del usuario)
+## M0 — Spikes (ola O1 lanzada 2026-10-17; 6 agentes ∥, trabajo sobre main con propiedad estricta de archivos)
 
-| ID | Estado |
-|----|--------|
-| M0-S1..S6 + M0-G0 (freeze INTERFACES) | TODO — esperar "adelante con M0" |
+| ID | Spike | Estado | Sesión |
+|----|-------|--------|--------|
+| M0-S1 | shell / dock 4 paneles | DOING | ses_eb6356f6fffeSeXbfr5qfSoo72 |
+| M0-S2 | editor tree-sitter | DOING | ses_eb6356f6dffeNoGtdmTfauw4CU |
+| M0-S3 | PDF hayro (render + RenderImage) | DOING | ses_eb6356f5cffeI5008v7WLzSdMd |
+| M0-S4 | chat opencode (REST/SSE + fixtures) | DOING | ses_eb6356f5affeYRRCp2uc8uotkm |
+| M0-S5 | engine latexmk + logparse + synctex | DOING | ses_eb6356f59ffeS9HGXlbA83Atu2 |
+| M0-S6 | fs/watcher + tree component | DOING | ses_eb6356f57ffeFbP8y5J4YAl3yh |
+| M0-G0 | Freeze `INTERFACES.md` | TODO | orchestrator, al cerrar S1–S6 — requiere revisión del usuario |
 
 ## Notas
 
