@@ -65,7 +65,7 @@
 | **E** chat IA | `crates/chat/**`, `crates/ui/src/panels/chat.rs`, wiring en `app.rs` | E1..E6 (supervisor prod, reducer, panel Copilot, permisos, fix-with-AI, pickers) | ses_eb5049c0fffeVXs8qCkzA75HM3 | DOING |
 | **F** proyectos/fs | `crates/core/**` (+project), `ui/src/{project,new_project,tree,toolbar}.rs` | F1..F4 (ProjectService en core, tree production events, ops, wizard + plantillas) | ses_eb5049c0effetI9psO009sDCjz | DOING |
 
-Tras O3: **integración final + gates + E2E de 8 pasos → gate G1**.
+**G1 cerrado (2026-10-17): ✅ PASS** — informe `docs/qa/reports/G1-2026-10-17.md`. E2E: pasos 1–4 y 7 con evidencia visual (`shots/e2e-*.png`); 5–6/8 cubiertos por tests gated + 2 validaciones manuales pendientes (Ctrl+Alt+J y aprobación de permiso en vivo). Gates: fmt/clippy/test verdes (29 suites); live chat verde con **DeepSeek V4.1 Flash**. Siguiente: **M2 (G2)**.
 
 **Modelo del chat (petición del usuario, 2026-10-17)**: el producto usa por defecto **`opencode-go/deepseek-v4.1-flash`** (antes gpt-5.6-luna) — fijado en `agent/opencode.json` (`model`) y `config/settings.json` (`ai.model`); verificado contra `GET /config` del server real (commit `aa8573b`). Todos los tests/demos nuevos del chat usan DeepSeek.
 

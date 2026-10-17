@@ -36,6 +36,6 @@
 |------|-------|----------|---------|-----------|
 | P0 | 2026-10-17 | ✅ PASS | `docs/qa/reports/P0-2026-10-17.md` | P0.4b remoto+push; `xtask fixtures` |
 | G0 | pendiente | — | informes `docs/qa/reports/M0-S{1..6}-*.md` + demos ejecutables | **revisión con el usuario** (demos + freeze); tras G0 → O2 (M1) |
-| G1 | — | — | — | — |
+| G1 | 2026-10-17 | ✅ **PASS** | `docs/qa/reports/G1-2026-10-17.md` | 2 validaciones manuales: Ctrl+Alt+J (sync) y aprobación de permiso IA en vivo; M2: harness UI con test-support |
 | G2 | — | — | — | — |
 | G3 | — | — | — | — |
