@@ -1,0 +1,103 @@
+name: installer
+
+# Construye el instalador de Windows (M3-1/M3-2) en CI.
+#
+# Por qué en CI: los activos pesados del producto (agent\opencode.exe, tex\) NO
+# están en git, así que el runner los prepara:
+#   - opencode portable: se descarga del release oficial en la versión fijada
+#     (abajo, OPENCODE_VERSION) → agent\opencode.exe
+#   - TeX Live: NO se incluye (instalador ligero, ~85 MB); el usuario copia o
+#     actualiza su carpeta tex\ (o usa el zip `full` montado con `xtask dist`).
+#
+# Se dispara a mano (workflow_dispatch) o al empujar un tag `v*`.
+on:
+  workflow_dispatch:
+    inputs:
+      opencode_version:
+        description: "Versión portable de opencode (p. ej. v1.18.30)"
+        required: false
+        default: "v1.18.30"
+  push:
+    tags: ["v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+  OPENCODE_VERSION: ${{ github.event.inputs.opencode_version || 'v1.18.30' }}
+
+jobs:
+  windows-installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # --- Agente portable (fuera de git) ----------------------------------
+      - name: Descargar opencode portable
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = Join-Path $env:RUNNER_TEMP 'opencode.zip'
+          $url = "https://github.com/sst/opencode/releases/download/$env:OPENCODE_VERSION/opencode-windows-x64.zip"
+          Write-Host "descargando $url"
+          curl.exe -L --fail --retry 3 -o $zip $url
+          $dest = Join-Path $env:GITHUB_WORKSPACE 'agent'
+          New-Item -ItemType Directory -Force $dest | Out-Null
+          Expand-Archive -Path $zip -DestinationPath $dest -Force
+          $exe = Get-ChildItem -Path $dest -Recurse -Filter 'opencode.exe' | Select-Object -First 1
+          if (-not $exe) { throw "el zip de opencode no trae opencode.exe" }
+          if ($exe.DirectoryName -ne $dest) {
+            Copy-Item $exe.FullName (Join-Path $dest 'opencode.exe') -Force
+          }
+          & (Join-Path $dest 'opencode.exe') --version
+
+      # --- Aplicación -------------------------------------------------------
+      - name: Compilar la app (release)
+        run: cargo build --release -p latex-studio
+
+      - name: Montar la distribución
+        run: cargo run -p xtask -- dist --no-tex --no-zip --clean
+
+      # --- Instalador -------------------------------------------------------
+      - name: Inno Setup 6
+        shell: pwsh
+        run: |
+          if (-not (Get-Command iscc.exe -ErrorAction SilentlyContinue)) {
+            choco install innosetup --no-progress -y
+          }
+          if (-not (Get-Command iscc.exe -ErrorAction SilentlyContinue)) {
+            $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+            if (-not (Test-Path $iscc)) { throw 'ISCC.exe no disponible' }
+          }
+
+      - name: Compilar el instalador
+        shell: pwsh
+        run: |
+          $version = (Get-Content (Join-Path 'dist\latex-ide' 'VERSION') -First 1) -split '\s+' | Select-Object -Index 1
+          pwsh -File installer\build.ps1 -SkipBuild -Version $version
+
+      - name: Checksum del instalador
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem dist -Filter 'LaTeX-Studio-Setup*.exe' | Select-Object -First 1
+          if (-not $setup) { throw 'no se generó el Setup.exe' }
+          $hash = (Get-FileHash $setup.FullName -Algorithm SHA256).Hash.ToLower()
+          "$hash  $($setup.Name)" | Set-Content (Join-Path $setup.DirectoryName "$($setup.Name).sha256")
+          Get-Content (Join-Path $setup.DirectoryName "$($setup.Name).sha256")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: latex-studio-installer
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            dist/LaTeX-Studio-Setup*.exe
+            dist/LaTeX-Studio-Setup*.exe.sha256
+            dist/latex-ide/SHA256SUMS.txt
+            dist/latex-ide/VERSION
+
+  # El zip `full` (con TeX Live) NO se construye en CI: son 4,4 GB de activos que
+  # no están en git. Se monta en la máquina que tiene tex\:
+  #   cargo xtask dist            # monta dist\latex-ide + latex-studio-full-<v>.zip
+  #   pwsh installer\build.ps1 -BundledTex -SkipBuild
