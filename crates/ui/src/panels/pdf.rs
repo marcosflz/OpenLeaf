@@ -554,6 +554,14 @@ impl PdfPanel {
                             generation,
                             page_count,
                         });
+                        // El aviso de página no llega si la visible sigue siendo
+                        // la 1 (p. ej. tras recargar): se publica siempre para
+                        // que la status bar muestre la página y el total.
+                        this.current_page = this.current_page.clamp(1, page_count.max(1));
+                        cx.emit(PdfPanelEvent::PageChanged {
+                            page: this.current_page,
+                            count: page_count,
+                        });
                         cx.notify();
                     }
                     Err(err) => {
