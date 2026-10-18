@@ -43,7 +43,7 @@ use gpui_kit::component::button::*;
 use gpui_kit::component::clipboard::Clipboard;
 use gpui_kit::component::collapsible::Collapsible;
 use gpui_kit::component::dialog::{DialogDescription, DialogFooter};
-use gpui_kit::component::input::{Textarea, TextareaState};
+use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::text::{TextView, TextViewStyle};
@@ -372,6 +372,11 @@ pub struct ChatPanel {
     permission_preset: PermissionPreset,
     /// Mensaje hasta el que se revirtió la sesión (banner «Deshacer»).
     reverted_to: Option<String>,
+    /// Suscripción a los eventos del composer (PressEnter envía).
+    _composer_sub: Option<Subscription>,
+    /// Intentos de envío (solo tests: verifica el cableado de Enter).
+    #[cfg(test)]
+    send_attempts: usize,
     /// Permisos ya mostrados como modal (no repetir).
     permission_shown: BTreeSet<String>,
 }
@@ -383,6 +388,9 @@ impl ChatPanel {
         let textarea = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .placeholder("Pregunta lo que quieras…")
+                // `Enter` envía (emite `PressEnter`); `Shift+Enter` inserta
+                // salto de línea. Es el modo "submit on enter" del kit.
+                .submit_on_enter(true)
                 .auto_grow(1, 6)
         });
         let replay_path = std::env::var_os("LSX_CHAT_REPLAY")
@@ -393,6 +401,9 @@ impl ChatPanel {
             show_reasoning: config.show_reasoning,
             permission_preset: config.permission_preset,
             reverted_to: None,
+            _composer_sub: None,
+            #[cfg(test)]
+            send_attempts: 0,
             config,
             conversation: Conversation::default(),
             service: None,
@@ -419,6 +430,11 @@ impl ChatPanel {
             panel.load_replay(&path);
             return panel;
         }
+
+        // `Enter` en el composer llega como `InputEvent::PressEnter` (ver
+        // `submit_on_enter` arriba): se manda el mensaje. El salto de línea de
+        // `Shift+Enter` no emite este evento.
+        panel.subscribe_composer(window, cx);
 
         // Servicio (hilo propio; no bloquea la creación).
         let service = lsx_chat::service::spawn(panel.config.service_config());
@@ -796,8 +812,29 @@ impl ChatPanel {
         self.send_current(window, cx);
     }
 
+    /// Conecta el `PressEnter` del composer con el envío (M2): `Enter` manda el
+    /// mensaje; con `Shift` el kit inserta salto de línea y **también** emite el
+    /// evento (con `shift: true`), así que aquí se filtra.
+    fn subscribe_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let textarea = self.textarea.clone();
+        let sub = cx.subscribe_in(
+            &textarea,
+            window,
+            |panel, _state, event: &InputEvent, window, cx| {
+                if matches!(event, InputEvent::PressEnter { shift: false, .. }) {
+                    panel.send_current(window, cx);
+                }
+            },
+        );
+        self._composer_sub = Some(sub);
+    }
+
     /// Envía lo escrito en el composer (botón, o `Enter` sin modificadores).
     fn send_current(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(test)]
+        {
+            self.send_attempts += 1;
+        }
         if self.replay.is_some()
             || self.server != ServerPhase::Ready
             || self.conversation.streaming()
@@ -2050,6 +2087,8 @@ impl ChatPanel {
                         },
                     )
                     .child(
+                        // `Enter` envía (`InputEvent::PressEnter` del textarea,
+                        // ver `submit_on_enter`) y `Shift+Enter` inserta salto.
                         v_flex()
                             .w_full()
                             .gap(px(2.))
@@ -2060,19 +2099,6 @@ impl ChatPanel {
                             .px(px(8.))
                             .pt(px(6.))
                             .pb(px(6.))
-                            // `Enter` envía; `Shift+Enter` mete salto de línea.
-                            // Va en captura (antes del textarea) para que el
-                            // salto no llegue a insertarse.
-                            .capture_key_down(cx.listener(
-                                |panel, event: &KeyDownEvent, window, cx| {
-                                    let enter =
-                                        matches!(event.keystroke.key.as_str(), "enter" | "return");
-                                    if enter && !event.keystroke.modifiers.shift {
-                                        cx.stop_propagation();
-                                        panel.send_current(window, cx);
-                                    }
-                                },
-                            ))
                             .child(
                                 Textarea::new(&self.textarea)
                                     .appearance(false)
@@ -2317,7 +2343,45 @@ mod tests {
         f(cx, chat, textarea)
     }
 
-    /// Los presets de permisos deciden cuándo se puede prescindir del modal.
+    /// `Enter` en el composer: no inserta salto de línea (lo consume el panel
+    /// para enviar). Si el listener no se dispara, el textarea recibe el salto.
+    #[test]
+    fn enter_en_el_composer_no_inserta_salto_de_linea() {
+        if std::env::var_os("LSX_CHAT_REPLAY").is_some()
+            || std::env::var_os("LSX_SPIKE_REPLAY").is_some()
+        {
+            eprintln!("replay activo: el composer es de solo lectura, test omitido");
+            return;
+        }
+        with_chat(&mut TestAppContext::single(), |cx, chat, textarea| {
+            let input_id = ("input", textarea.entity_id());
+            cx.update(|window, cx| window.click(input_id, cx));
+            cx.update(|window, cx| window.input("hola", cx));
+            cx.update(|window, cx| window.press("enter", cx));
+            let text = cx.read(|cx| textarea.read(cx).value().to_string());
+            assert_eq!(text, "hola", "Enter no debe insertar salto de línea");
+            // El panel intentó enviarlo (`PressEnter` → `send_current`).
+            assert_eq!(
+                cx.read(|cx| chat.read(cx).send_attempts),
+                1,
+                "Enter debe llegar al envío del panel"
+            );
+
+            // Shift+Enter sí inserta salto de línea y no envía.
+            cx.update(|window, cx| window.press("shift-enter", cx));
+            let text = cx.read(|cx| textarea.read(cx).value().to_string());
+            assert!(
+                text.contains('\n'),
+                "Shift+Enter debe insertar salto; texto: {text:?}"
+            );
+            assert_eq!(
+                cx.read(|cx| chat.read(cx).send_attempts),
+                1,
+                "Shift+Enter no envía"
+            );
+        });
+    }
+
     #[test]
     fn los_presets_de_permisos_deciden_sin_preguntar() {
         use lsx_chat::protocol::PermissionReply;

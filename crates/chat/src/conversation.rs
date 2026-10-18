@@ -245,6 +245,11 @@ pub struct Conversation {
     pub diff_files: usize,
     message_ix: HashMap<String, usize>,
     permission_ix: HashMap<String, usize>,
+    /// Deltas de texto de partes cuyo tipo aún no conocemos: opencode emite
+    /// `message.part.delta` antes del primer `message.part.updated` y sin tipo,
+    /// así que un razonamiento en streaming se pintaría como texto normal
+    /// (parpadeo). Se guardan aquí y se materializan al llegar el snapshot.
+    pending_deltas: HashMap<String, (String, String)>,
 }
 
 impl Conversation {
@@ -308,6 +313,7 @@ impl Conversation {
     pub fn clear_transcript(&mut self) {
         self.messages.clear();
         self.message_ix.clear();
+        self.pending_deltas.clear();
         self.diff_files = 0;
         // Los permisos se conservan: una reconexión no debe perder una petición
         // viva. Las partes `Permission` desaparecen con sus mensajes.
@@ -424,6 +430,28 @@ impl Conversation {
         }
     }
 
+    /// Materializa como texto los deltas que nunca recibieron snapshot (cierre
+    /// de turno): el snapshot es la fuente del tipo, pero el texto ya emitido
+    /// no se pierde.
+    fn flush_pending_deltas(&mut self) {
+        let pending: Vec<(String, String, String)> = self
+            .pending_deltas
+            .drain()
+            .map(|(part_id, (message_id, text))| (part_id, message_id, text))
+            .collect();
+        for (part_id, message_id, text) in pending {
+            if text.is_empty() {
+                continue;
+            }
+            let index = self.ensure_message(&message_id, Role::Assistant);
+            self.messages[index].parts.push(Part::Text {
+                part_id,
+                text,
+                streaming: false,
+            });
+        }
+    }
+
     /// Reduce un evento de dominio sobre el estado.
     pub fn apply_stream(&mut self, event: &SpikeEvent) {
         match event {
@@ -506,12 +534,16 @@ impl Conversation {
                     return;
                 }
                 if self.find_part_mut(part_id).is_none() {
-                    let index = self.ensure_message(message_id, Role::Assistant);
-                    self.messages[index].parts.push(Part::Text {
-                        part_id: part_id.clone(),
-                        text: String::new(),
-                        streaming: true,
-                    });
+                    // El tipo de la parte aún no se conoce (el snapshot llega
+                    // después): se acumula sin pintar para no mostrar el
+                    // razonamiento como texto mientras se genera.
+                    let entry = self
+                        .pending_deltas
+                        .entry(part_id.clone())
+                        .or_insert_with(|| (message_id.clone(), String::new()));
+                    entry.0 = message_id.clone();
+                    entry.1.push_str(delta);
+                    return;
                 }
                 if let Some(Part::Text { text, .. } | Part::Reasoning { text, .. }) =
                     self.find_part_mut(part_id)
@@ -578,6 +610,9 @@ impl Conversation {
             SpikeEvent::SessionIdle { .. } => {
                 self.status = TurnStatus::Idle;
                 self.close_open_parts();
+                // Red de seguridad: si algún delta nunca recibió su snapshot, se
+                // materializa como texto para no perder lo ya emitido.
+                self.flush_pending_deltas();
             }
             SpikeEvent::SessionError { message, .. } => {
                 let mut error_message =
@@ -626,9 +661,15 @@ impl Conversation {
                     return;
                 }
                 let index = self.ensure_message(message_id, Role::Assistant);
+                // Si hubo deltas antes del snapshot, mandan ellos cuando son
+                // más largos (el snapshot puede llegar recortado).
+                let text = match self.pending_deltas.remove(part_id) {
+                    Some((_, buffered)) if buffered.len() > markdown.len() => buffered,
+                    _ => markdown.clone(),
+                };
                 self.messages[index].parts.push(Part::Text {
                     part_id: part_id.clone(),
-                    text: markdown.clone(),
+                    text,
                     streaming: *streaming,
                 });
             }
@@ -673,9 +714,15 @@ impl Conversation {
                     return;
                 }
                 let index = self.ensure_message(message_id, Role::Assistant);
+                // Deltas previos al snapshot (típico en el razonamiento): se
+                // materializan aquí, ya como `Reasoning`, y nacen plegados.
+                let text = match self.pending_deltas.remove(part_id) {
+                    Some((_, buffered)) if buffered.len() > text.len() => buffered,
+                    _ => text.clone(),
+                };
                 self.messages[index].parts.push(Part::Reasoning {
                     part_id: part_id.clone(),
-                    text: text.clone(),
+                    text,
                     done: *done,
                 });
             }
@@ -908,6 +955,70 @@ mod tests {
             markdown: text.to_owned(),
             streaming: true,
         }
+    }
+
+    /// Mientras el tipo de una parte no se conoce, sus deltas **no** se pintan:
+    /// si no, el razonamiento aparece un instante como texto normal y luego se
+    /// colapsa (parpadeo reportado por el usuario).
+    #[test]
+    fn los_deltas_sin_snapshot_no_se_pintan_hasta_saber_el_tipo() {
+        let mut conversation = Conversation::default();
+        for delta in ["Pensando ", "en la ", "respuesta."] {
+            conversation.apply_stream(&SpikeEvent::PartDelta {
+                session_id: "ses_1".to_owned(),
+                message_id: "msg_1".to_owned(),
+                part_id: "prt_reason".to_owned(),
+                field: "text".to_owned(),
+                delta: delta.to_owned(),
+            });
+        }
+        // Nada visible todavía: no hay parte de texto con el razonamiento.
+        let visible = conversation
+            .messages
+            .iter()
+            .flat_map(|message| message.parts.iter())
+            .any(|part| matches!(part, Part::Text { .. }));
+        assert!(!visible, "los deltas huérfanos no deben pintarse");
+
+        // Llega el snapshot: aparece como razonamiento (plegado por el panel)
+        // con el texto acumulado.
+        conversation.apply_part(&SpikePartUpdate::Reasoning {
+            message_id: "msg_1".to_owned(),
+            part_id: "prt_reason".to_owned(),
+            text: "Pensando en la respuesta.".to_owned(),
+            done: false,
+        });
+        assert!(matches!(
+            &conversation.messages[0].parts[0],
+            Part::Reasoning { text, .. } if text == "Pensando en la respuesta."
+        ));
+
+        // Al cerrar el turno no queda nada pendiente.
+        conversation.apply_stream(&SpikeEvent::SessionIdle {
+            session_id: "ses_1".to_owned(),
+        });
+        assert!(conversation.pending_deltas.is_empty());
+    }
+
+    /// Red de seguridad: si un delta nunca recibe snapshot, se materializa como
+    /// texto al cerrar el turno (no se pierde lo emitido).
+    #[test]
+    fn un_delta_huerfano_se_materializa_al_cerrar_el_turno() {
+        let mut conversation = Conversation::default();
+        conversation.apply_stream(&SpikeEvent::PartDelta {
+            session_id: "ses_1".to_owned(),
+            message_id: "msg_9".to_owned(),
+            part_id: "prt_huerfano".to_owned(),
+            field: "text".to_owned(),
+            delta: "texto sin snapshot".to_owned(),
+        });
+        conversation.apply_stream(&SpikeEvent::SessionIdle {
+            session_id: "ses_1".to_owned(),
+        });
+        assert!(matches!(
+            &conversation.messages[0].parts[0],
+            Part::Text { text, .. } if text == "texto sin snapshot"
+        ));
     }
 
     #[test]
