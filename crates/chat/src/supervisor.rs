@@ -15,7 +15,7 @@
 //! - **PATH**: se antepone `tex/bin/windows` y `agent/` para que el agente
 //!   `latex-fix` encuentre `latexmk`/`tlmgr`/`opencode` (INTERFACES §5.4).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -32,6 +32,11 @@ pub struct ServerSpec {
     pub exe: PathBuf,
     /// Ruta a `agent\opencode.json` (se exporta como `OPENCODE_CONFIG`).
     pub config_json: PathBuf,
+    /// Config efectiva generada (copia de `config_json` con `skills.paths`
+    /// apuntando al bundle). `None` → se usa `config_json` tal cual.
+    pub runtime_config: Option<PathBuf>,
+    /// Directorio de skills del bundle (`assets/skills`), si existe.
+    pub skills_dir: Option<PathBuf>,
     /// cwd = raíz del proyecto activo.
     pub cwd: PathBuf,
     /// `OPENCODE_SERVER_PASSWORD` (None → server sin auth, solo para spikes).
@@ -147,6 +152,52 @@ pub fn random_password() -> String {
     out
 }
 
+/// Config efectiva del server: copia `config_json` añadiendo
+/// `skills.paths = [<skills_dir absoluto>]` y la escribe en `out`.
+///
+/// Devuelve la ruta de la config generada. Las skills del bundle viven dentro
+/// de la distribución (`assets/skills`) y opencode solo descubre las globales
+/// (`~/.agents/skills`) o las que declare la config, así que esta es la forma de
+/// que sean portables sin escribir nada en la carpeta del usuario.
+pub fn write_runtime_config(config_json: &Path, skills_dir: &Path, out: &Path) -> Result<PathBuf> {
+    let fail = |message: String| ChatError::ConfigIo(message);
+    if !skills_dir.is_dir() {
+        return Err(fail(format!(
+            "el directorio de skills no existe: {}",
+            skills_dir.display()
+        )));
+    }
+    let raw = std::fs::read_to_string(config_json).map_err(|error| {
+        fail(format!(
+            "no se pudo leer {}: {error}",
+            config_json.display()
+        ))
+    })?;
+    let mut value: serde_json::Value = serde_json::from_str(&raw).map_err(|error| {
+        fail(format!(
+            "{} no es JSON válido: {error}",
+            config_json.display()
+        ))
+    })?;
+    let skills = skills_dir.to_string_lossy().to_string();
+    let root = value
+        .as_object_mut()
+        .ok_or_else(|| fail("la config de opencode no es un objeto".to_owned()))?;
+    let entry = root
+        .entry("skills")
+        .or_insert_with(|| serde_json::json!({}));
+    entry["paths"] = serde_json::json!([skills]);
+    let rendered = serde_json::to_string_pretty(&value)
+        .map_err(|error| fail(format!("no se pudo serializar la config: {error}")))?;
+    if let Some(parent) = out.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| fail(format!("no se pudo crear {}: {error}", parent.display())))?;
+    }
+    std::fs::write(out, rendered)
+        .map_err(|error| fail(format!("no se pudo escribir {}: {error}", out.display())))?;
+    Ok(out.to_path_buf())
+}
+
 /// Arranca `opencode serve --hostname 127.0.0.1 --port {p}` en `spec.cwd` con
 /// `OPENCODE_CONFIG`/`OPENCODE_SERVER_PASSWORD`, lo mete en un job con
 /// kill-on-close y poletea `GET /global/health` hasta `health_timeout`.
@@ -156,6 +207,19 @@ pub async fn start(spec: &ServerSpec, health_timeout: Duration) -> Result<Runnin
         None => pick_random_free_port()?,
     };
     let mut command = Command::new(&spec.exe);
+    // Config efectiva: el bundle viaja con rutas relativas, así que las skills
+    // portables se inyectan como ruta absoluta en `skills.paths` (opencode solo
+    // mira `~/.agents/skills` o lo que diga la config).
+    let opencode_config = match (&spec.runtime_config, &spec.skills_dir) {
+        (Some(out), Some(skills)) => match write_runtime_config(&spec.config_json, skills, out) {
+            Ok(path) => path,
+            Err(err) => {
+                tracing::warn!(error = %err, "no se pudo generar la config de opencode; se usa la del bundle");
+                spec.config_json.clone()
+            }
+        },
+        _ => spec.config_json.clone(),
+    };
     command
         .arg("serve")
         .arg("--hostname")
@@ -163,7 +227,7 @@ pub async fn start(spec: &ServerSpec, health_timeout: Duration) -> Result<Runnin
         .arg("--port")
         .arg(port.to_string())
         .current_dir(&spec.cwd)
-        .env("OPENCODE_CONFIG", &spec.config_json)
+        .env("OPENCODE_CONFIG", &opencode_config)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -471,11 +535,42 @@ mod tests {
         assert_eq!(policy.delays[3], Duration::from_secs(5));
     }
 
+    #[test]
+    fn runtime_config_inyecta_las_skills_del_bundle() {
+        let dir = std::env::temp_dir().join(format!("lsx-chat-config-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("skills").join("latex-x")).expect("skills");
+        let shipped = dir.join("opencode.json");
+        std::fs::write(
+            &shipped,
+            r#"{ "model": "opencode-go/deepseek-v4.1-flash", "permission": { "edit": "ask" } }"#,
+        )
+        .expect("config");
+        let out = dir.join("config").join("opencode.runtime.json");
+
+        let generated = write_runtime_config(&shipped, &dir.join("skills"), &out).expect("genera");
+        assert_eq!(generated, out);
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&out).expect("lee")).expect("json");
+        // Conserva la config del bundle y añade la ruta absoluta de las skills.
+        assert_eq!(value["permission"]["edit"], "ask");
+        assert_eq!(
+            value["skills"]["paths"][0].as_str().unwrap(),
+            dir.join("skills").to_string_lossy()
+        );
+
+        // Sin directorio de skills no se genera nada (se usa la del bundle).
+        assert!(write_runtime_config(&shipped, &dir.join("no-existe"), &out).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[tokio::test]
     async fn stopping_an_idle_supervisor_is_a_no_op() {
         let spec = ServerSpec {
             exe: PathBuf::from("no-existe.exe"),
             config_json: PathBuf::from("no.json"),
+            runtime_config: None,
+            skills_dir: None,
             cwd: PathBuf::from("."),
             password: None,
             port_preference: None,
@@ -493,6 +588,8 @@ mod tests {
         let spec = ServerSpec {
             exe: PathBuf::from("no-existe.exe"),
             config_json: PathBuf::from("no.json"),
+            runtime_config: None,
+            skills_dir: None,
             cwd: PathBuf::from("."),
             password: None,
             port_preference: None,

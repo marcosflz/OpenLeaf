@@ -50,6 +50,11 @@ pub enum ChatError {
     /// Se agotó un plazo esperando algo.
     #[error("timeout esperando {what}")]
     Timeout { what: String },
+
+    /// La configuración efectiva de opencode no se pudo generar
+    /// (`skills.paths`, M2). No es fatal: se cae a la del bundle.
+    #[error("config de opencode: {0}")]
+    ConfigIo(String),
 }
 
 /// Alias de conveniencia.

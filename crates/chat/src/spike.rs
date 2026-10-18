@@ -71,6 +71,8 @@ impl SpikeConfig {
         ServerSpec {
             exe: self.opencode_exe.clone(),
             config_json: self.config_json.clone(),
+            runtime_config: None,
+            skills_dir: None,
             cwd: self.project_cwd.clone(),
             password: self.password.clone(),
             port_preference: Some(self.port_preference),

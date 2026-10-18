@@ -230,6 +230,42 @@ impl ApiClient {
             .map_err(Into::into)
     }
 
+    /// `POST /session/:id/revert` body `{messageID}` — deshace ese mensaje y
+    /// sus efectos sobre los archivos (revert nativo de opencode).
+    pub async fn revert(&self, session_id: &str, message_id: &str) -> Result<SessionInfo> {
+        let response = self
+            .request(
+                reqwest::Method::POST,
+                &format!("/session/{session_id}/revert"),
+            )
+            .timeout(Duration::from_secs(30))
+            .json(&json!({ "messageID": message_id }))
+            .send()
+            .await?;
+        ensure_success(response, "POST session/revert")
+            .await?
+            .json()
+            .await
+            .map_err(Into::into)
+    }
+
+    /// `POST /session/:id/unrevert` — restaura los mensajes revertidos.
+    pub async fn unrevert(&self, session_id: &str) -> Result<SessionInfo> {
+        let response = self
+            .request(
+                reqwest::Method::POST,
+                &format!("/session/{session_id}/unrevert"),
+            )
+            .timeout(Duration::from_secs(30))
+            .send()
+            .await?;
+        ensure_success(response, "POST session/unrevert")
+            .await?
+            .json()
+            .await
+            .map_err(Into::into)
+    }
+
     /// `GET /session/status` — mapa `{ses_id: {type: idle|busy|retry}}`.
     pub async fn session_statuses(&self) -> Result<Value> {
         let response = self

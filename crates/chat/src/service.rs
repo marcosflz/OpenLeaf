@@ -34,6 +34,13 @@ pub struct ChatConfig {
     pub exe: PathBuf,
     /// `agent\opencode.json`.
     pub config_json: PathBuf,
+    /// Config efectiva generada (`config/opencode.runtime.json`): copia de
+    /// `config_json` con las rutas absolutas del bundle que opencode no puede
+    /// adivinar — hoy, `skills.paths` (skills LaTeX portables, M2). Si no se
+    /// puede generar, se usa `config_json` tal cual.
+    pub runtime_config: Option<PathBuf>,
+    /// Directorio de skills del bundle (`assets/skills`), si existe.
+    pub skills_dir: Option<PathBuf>,
     /// Raíz del proyecto activo (cwd del server y `?directory=` de las sesiones).
     pub project_cwd: PathBuf,
     /// Nombre visible del proyecto (título de sesiones nuevas).
@@ -63,6 +70,8 @@ impl Default for ChatConfig {
         Self {
             exe: PathBuf::from("agent/opencode.exe"),
             config_json: PathBuf::from("agent/opencode.json"),
+            runtime_config: None,
+            skills_dir: None,
             project_cwd: PathBuf::from("."),
             project_name: "LaTeX Studio".to_owned(),
             port: None,
@@ -118,6 +127,12 @@ pub enum ChatCmd {
         request_id: String,
         reply: PermissionReply,
     },
+    /// Revierte la sesión hasta `message_id` (revert nativo de opencode:
+    /// deshace los cambios de archivos y el historial de ese mensaje en
+    /// adelante).
+    Revert { message_id: String },
+    /// Restaura los mensajes revertidos (`unrevert`).
+    Unrevert,
 }
 
 /// Eventos servicio → UI.
@@ -154,6 +169,10 @@ pub enum ChatEvent {
         model: Option<ModelRef>,
         agent: String,
     },
+    /// La sesión se revirtió hasta `message_id` (el historial se recarga).
+    Reverted { message_id: String },
+    /// Se restauraron los mensajes revertidos.
+    Unreverted,
     /// Error mostrable; `recoverable` indica que el servicio sigue vivo.
     Error { message: String, recoverable: bool },
     /// El worker terminó (server parado).
@@ -252,6 +271,8 @@ impl Worker {
         let spec = ServerSpec {
             exe: config.exe.clone(),
             config_json: config.config_json.clone(),
+            runtime_config: config.runtime_config.clone(),
+            skills_dir: config.skills_dir.clone(),
             cwd: config.project_cwd.clone(),
             password: config.password.clone(),
             port_preference: config.port,
@@ -376,6 +397,12 @@ impl Worker {
             }
             ChatCmd::Permission { request_id, reply } => {
                 self.respond_permission(&request_id, reply, out).await;
+            }
+            ChatCmd::Revert { message_id } => {
+                self.revert(&message_id, out).await;
+            }
+            ChatCmd::Unrevert => {
+                self.unrevert(out).await;
             }
         }
         true
@@ -629,6 +656,46 @@ impl Worker {
             }
             Err(error) => {
                 self.emit_error(out, format!("no se pudo abrir la sesión: {error}"))
+                    .await;
+            }
+        }
+    }
+
+    /// Revierte la sesión hasta `message_id` y recarga el historial.
+    async fn revert(&mut self, message_id: &str, out: &Sender<ChatEvent>) {
+        let (Some(client), Some(session)) = (self.client.clone(), self.session.clone()) else {
+            return;
+        };
+        match client.revert(&session.id, message_id).await {
+            Ok(updated) => {
+                self.session = Some(updated);
+                let _ = out
+                    .send(ChatEvent::Reverted {
+                        message_id: message_id.to_owned(),
+                    })
+                    .await;
+                self.refetch_history(out).await;
+            }
+            Err(error) => {
+                self.emit_error(out, format!("no se pudo revertir el mensaje: {error}"))
+                    .await;
+            }
+        }
+    }
+
+    /// Deshace el último revert (restaura los mensajes).
+    async fn unrevert(&mut self, out: &Sender<ChatEvent>) {
+        let (Some(client), Some(session)) = (self.client.clone(), self.session.clone()) else {
+            return;
+        };
+        match client.unrevert(&session.id).await {
+            Ok(updated) => {
+                self.session = Some(updated);
+                let _ = out.send(ChatEvent::Unreverted).await;
+                self.refetch_history(out).await;
+            }
+            Err(error) => {
+                self.emit_error(out, format!("no se pudo deshacer el revert: {error}"))
                     .await;
             }
         }

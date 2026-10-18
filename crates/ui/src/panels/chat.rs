@@ -42,6 +42,7 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::button::*;
 use gpui_kit::component::clipboard::Clipboard;
 use gpui_kit::component::collapsible::Collapsible;
+use gpui_kit::component::dialog::{DialogDescription, DialogFooter};
 use gpui_kit::component::input::{Textarea, TextareaState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::spinner::Spinner;
@@ -210,6 +211,10 @@ pub struct ChatPanelConfig {
     pub show_reasoning: bool,
     /// `ai.permissionPreset`.
     pub permission_preset: PermissionPreset,
+    /// Config efectiva de opencode (`config/opencode.runtime.json`).
+    pub runtime_config: PathBuf,
+    /// Skills del bundle (`assets/skills`) para `skills.paths`.
+    pub skills_dir: PathBuf,
     /// `tex/bin/windows` + `agent` para el PATH del server.
     pub path_prepend: Vec<PathBuf>,
     /// Handle de estado compartido (dot IA de la status bar).
@@ -245,6 +250,8 @@ impl ChatPanelConfig {
             agent: ai.agent.clone(),
             show_reasoning: ai.show_reasoning,
             permission_preset: PermissionPreset::from_setting(&ai.permission_preset),
+            runtime_config: root.config_dir().join("opencode.runtime.json"),
+            skills_dir: root.path().join("assets").join("skills"),
             path_prepend: vec![root.tex_dir().join("bin").join("windows"), root.agent_dir()],
             status,
             editor,
@@ -257,6 +264,8 @@ impl ChatPanelConfig {
         ChatConfig {
             exe: self.exe.clone(),
             config_json: self.config_json.clone(),
+            runtime_config: Some(self.runtime_config.clone()),
+            skills_dir: Some(self.skills_dir.clone()),
             project_cwd: self.project_root.clone(),
             project_name: self.project_name.clone(),
             port: self.port,
@@ -361,6 +370,8 @@ pub struct ChatPanel {
     show_reasoning: bool,
     /// Preset de permisos vigente (botón «Permisos»).
     permission_preset: PermissionPreset,
+    /// Mensaje hasta el que se revirtió la sesión (banner «Deshacer»).
+    reverted_to: Option<String>,
     /// Permisos ya mostrados como modal (no repetir).
     permission_shown: BTreeSet<String>,
 }
@@ -381,6 +392,7 @@ impl ChatPanel {
         let mut panel = Self {
             show_reasoning: config.show_reasoning,
             permission_preset: config.permission_preset,
+            reverted_to: None,
             config,
             conversation: Conversation::default(),
             service: None,
@@ -569,11 +581,13 @@ impl ChatPanel {
                 self.conversation.set_active_session(Some(&session));
                 self.permission_shown.clear();
                 self.error_rows.clear();
+                self.reverted_to = None;
                 self.scroll.scroll_to_bottom();
             }
             ChatEvent::SessionCleared => {
                 self.conversation.set_active_session(None);
                 self.permission_shown.clear();
+                self.reverted_to = None;
             }
             ChatEvent::Stream(event) => {
                 // Los permisos abren modal (o se responden solos según el
@@ -613,6 +627,12 @@ impl ChatPanel {
                 if self.error_rows.len() > 3 {
                     self.error_rows.remove(0);
                 }
+            }
+            ChatEvent::Reverted { message_id } => {
+                self.reverted_to = Some(message_id);
+            }
+            ChatEvent::Unreverted => {
+                self.reverted_to = None;
             }
             ChatEvent::Stopped => {
                 self.server = ServerPhase::Idle;
@@ -1089,6 +1109,98 @@ impl ChatPanel {
             })
     }
 
+    /// Pide confirmación y revierte la sesión hasta `message_id` (M2): el
+    /// revert nativo de opencode deshace también los archivos que tocó el
+    /// agente desde ese punto.
+    fn confirm_revert(&mut self, message_id: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.replay.is_some() {
+            return;
+        }
+        let weak = cx.weak_entity();
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let weak = weak.clone();
+            let id = message_id.clone();
+            dialog
+                .title("Revertir hasta este mensaje")
+                .width(px(520.))
+                .child(DialogDescription::new().child(
+                    "Los archivos vuelven al estado anterior a este mensaje y el historial se \
+                     recorta aquí. Mientras no envíes otro mensaje podrás deshacerlo.",
+                ))
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            Button::new("chat-revert-cancel")
+                                .label("Cancelar")
+                                .outline()
+                                .on_click(|_, window, cx| window.close_dialog(cx)),
+                        )
+                        .child(
+                            Button::new("chat-revert-ok")
+                                .label("Revertir")
+                                .danger()
+                                .on_click(move |_, window, cx| {
+                                    let id = id.clone();
+                                    let _ = weak.update(cx, |panel, cx| {
+                                        panel.reverted_to = Some(id.clone());
+                                        panel.send_command(
+                                            ChatCmd::Revert {
+                                                message_id: id.clone(),
+                                            },
+                                            cx,
+                                        );
+                                    });
+                                    window.close_dialog(cx);
+                                }),
+                        ),
+                )
+        });
+    }
+
+    /// Deshace el último revert (`unrevert` de opencode).
+    fn on_unrevert(&mut self, _: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.replay.is_some() {
+            return;
+        }
+        self.reverted_to = None;
+        self.send_command(ChatCmd::Unrevert, cx);
+    }
+
+    /// Aviso de sesión revertida con botón «Deshacer».
+    fn render_reverted_banner(&self, ui: &Ui, cx: &mut Context<Self>) -> Option<AnyElement> {
+        self.reverted_to.as_ref()?;
+        Some(
+            h_flex()
+                .w_full()
+                .items_center()
+                .gap(px(8.))
+                .rounded(px(tok::R_MD))
+                .bg(ui.warning.opacity(0.12))
+                .px(px(10.))
+                .py(px(6.))
+                .child(
+                    Icon::new(IconName::Undo2)
+                        .size(px(13.))
+                        .text_color(ui.warning),
+                )
+                .child(
+                    div()
+                        .text_size(px(tok::TEXT_SM))
+                        .text_color(ui.fg)
+                        .child("Cambios revertidos: los archivos volvieron al estado anterior"),
+                )
+                .child(div().flex_1())
+                .child(
+                    Button::new("chat-unrevert")
+                        .small()
+                        .ghost()
+                        .label("Deshacer")
+                        .on_click(cx.listener(Self::on_unrevert)),
+                )
+                .into_any_element(),
+        )
+    }
+
     /// Cambia el preset de permisos y avisa al shell para persistirlo.
     fn select_permission_preset(&mut self, preset: PermissionPreset, cx: &mut Context<Self>) {
         if self.permission_preset == preset {
@@ -1322,13 +1434,46 @@ impl ChatPanel {
                 if texts.is_empty() && message.error.is_none() {
                     return None;
                 }
+                let can_revert = self.replay.is_none()
+                    && !self.conversation.streaming()
+                    && message.id.starts_with("msg");
+                let message_id = message.id.clone();
                 column = column
                     .child(
-                        div()
-                            .text_size(px(tok::TEXT_XS))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(ui.fg_muted)
-                            .child("Tú"),
+                        h_flex()
+                            .w_full()
+                            .items_center()
+                            .gap(px(6.))
+                            .child(
+                                div()
+                                    .text_size(px(tok::TEXT_XS))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(ui.fg_muted)
+                                    .child("Tú"),
+                            )
+                            .child(div().flex_1())
+                            .when(can_revert, |this| {
+                                this.child(
+                                    Button::new(SharedString::from(format!("chat-revert-{ix}")))
+                                        .xsmall()
+                                        .ghost()
+                                        .compact()
+                                        .icon(IconName::Undo2)
+                                        .tooltip(
+                                            "Revertir hasta este mensaje: deshace los cambios que \
+                                             hizo el agente después",
+                                        )
+                                        .on_click(cx.listener(
+                                            move |panel, _: &ClickEvent, window, cx| {
+                                                panel.confirm_revert(
+                                                    message_id.clone(),
+                                                    window,
+                                                    cx,
+                                                );
+                                            },
+                                        )),
+                                )
+                            }),
                     )
                     .child(
                         v_flex()
@@ -1857,6 +2002,9 @@ impl ChatPanel {
                     .max_w(px(700.))
                     .mx_auto()
                     .gap(px(6.))
+                    .when_some(self.render_reverted_banner(ui, cx), |this, banner| {
+                        this.child(banner)
+                    })
                     .when(
                         self.context_file.is_some()
                             || self.context_selection.is_some()
@@ -2148,6 +2296,8 @@ mod tests {
                 agent: "build".to_owned(),
                 show_reasoning: false,
                 permission_preset: PermissionPreset::Ask,
+                runtime_config: PathBuf::from("config/opencode.runtime.json"),
+                skills_dir: PathBuf::from("assets/skills"),
                 path_prepend: Vec::new(),
                 status,
                 editor: None,
