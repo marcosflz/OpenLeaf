@@ -102,6 +102,16 @@ cargo test --workspace                     → 29 suites OK (lsx-ui: 76 tests)
 cargo build --release -p latex-studio      → OK · copiado a dist/m0-demo/latex-studio.exe
 ```
 
+### Verificación visual (2026-10-18, `dist/m0-demo/latex-studio.exe`)
+
+`shots/m1c5-sync-final.png` (captura DPI-aware de la ventana real, 976×608):
+
+- toolbar con el interruptor **⇄** (scroll sync) junto a los toggles de hoja;
+- status bar con **`Ln 1, Col 1`** y **`Pág. 1/2`** (ambos ya vivos: antes nadie publicaba
+  `StatusMessage::Cursor`/`Page`; de paso, el visor publica `PageChanged` también al cargar);
+- chat con **texto tecleado en el composer** (`dwddwd`) — confirma en vivo el fix de foco:
+  antes el textarea se quedaba vacío por más que se tecleara.
+
 ### Comprobación con el proyecto real (CLI, 2026-10-18)
 
 `workspace/cv/plantilla-clasica` tiene `main.pdf` + `main.synctex.gz` (14 KB) y la distro
