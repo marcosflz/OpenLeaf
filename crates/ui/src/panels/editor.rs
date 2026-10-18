@@ -562,6 +562,12 @@ impl EditorPanel {
         cx.emit(EditorPanelEvent::CursorMoved { path, line, column });
     }
 
+    /// Texto del documento activo (tests/QA: comprobar inserciones).
+    pub fn active_text(&self, cx: &App) -> Option<String> {
+        let ix = self.active?;
+        Some(self.docs[ix].editor.read(cx).text().to_string())
+    }
+
     /// `true` si el documento activo tiene cambios sin guardar.
     pub fn active_is_dirty(&self) -> bool {
         self.active

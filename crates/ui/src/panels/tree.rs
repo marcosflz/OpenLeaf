@@ -42,8 +42,8 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    App, AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton,
+    AnyElement, App, AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle,
+    Focusable, FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton,
     ParentElement as _, Render, SharedString, Styled as _, Subscription, Task, WeakEntity, Window,
     div, px,
 };
@@ -81,6 +81,7 @@ pub enum TreePanelEvent {
 impl gpui_kit::EventEmitter<TreePanelEvent> for TreePanel {}
 
 use crate::layout::SlotKind;
+use crate::panels::bottom::BottomPanel;
 use crate::panels::{Pane, PaneEvent, PaneState, pane_container};
 use crate::project::ProjectInfo;
 use crate::status::{StatusHandle, StatusMessage};
@@ -109,10 +110,13 @@ pub struct TreePanel {
     last_batch: String,
     /// Última acción manual.
     last_action: String,
-    /// Log de eventos (más nuevos al final).
+    /// Log de eventos (más nuevos al final). Con el dock inferior montado el
+    /// log vive en él; aquí queda como respaldo para demos sin shell.
     log: VecDeque<String>,
-    /// Si la sección inferior de SALIDA está a la vista.
+    /// Si la sección inferior de SALIDA está a la vista (modo sin dock).
     show_output: bool,
+    /// Dock inferior (M2) que aloja PROBLEMAS · SALIDA · SÍMBOLOS.
+    bottom: Option<Entity<BottomPanel>>,
     /// Emisor del watcher (compartido con el guard vivo; se reutiliza al
     /// cambiar de proyecto).
     tx: Sender<Vec<FsEvent>>,
@@ -179,6 +183,7 @@ impl TreePanel {
             last_action: String::new(),
             log: VecDeque::new(),
             show_output: true,
+            bottom: None,
             tx,
             _filter_sub: filter_sub,
             _tree_sub: tree_sub,
@@ -244,10 +249,13 @@ impl TreePanel {
                     self.watcher_alive = true;
                 }
                 Err(err) => {
-                    self.push_log(format!(
-                        "! {}",
-                        rust_i18n::t!("ui.app.tree.error_watcher", error = err)
-                    ));
+                    self.push_log(
+                        format!(
+                            "! {}",
+                            rust_i18n::t!("ui.app.tree.error_watcher", error = err)
+                        ),
+                        cx,
+                    );
                 }
             }
         }
@@ -515,7 +523,7 @@ impl TreePanel {
                     format!("{stamp}  > {} => {}", from.display(), to.display())
                 }
             };
-            self.push_log(line);
+            self.push_log(line, cx);
         }
         self.last_batch = format!(
             "{} · {created}+ · {modified}~ · {removed}- · {renamed}>",
@@ -530,7 +538,20 @@ impl TreePanel {
         cx.notify();
     }
 
-    fn push_log(&mut self, line: String) {
+    /// Añade una línea a SALIDA: al dock inferior si está montado, si no al log
+    /// propio (demos/spikes).
+    /// Monta el dock inferior (M2) que aloja PROBLEMAS · SALIDA · SÍMBOLOS.
+    /// A partir de aquí la SALIDA del árbol va a ese panel.
+    pub fn attach_bottom(&mut self, bottom: Entity<BottomPanel>, cx: &mut Context<Self>) {
+        self.bottom = Some(bottom);
+        cx.notify();
+    }
+
+    fn push_log(&mut self, line: String, cx: &mut Context<Self>) {
+        if let Some(bottom) = self.bottom.clone() {
+            bottom.update(cx, |panel, cx| panel.push_output(line, cx));
+            return;
+        }
         self.log.push_back(line);
         while self.log.len() > LOG_CAP {
             self.log.pop_front();
@@ -540,7 +561,7 @@ impl TreePanel {
     // --- acciones ----------------------------------------------------------
 
     fn notify_error(&mut self, message: String, window: &mut Window, cx: &mut Context<Self>) {
-        self.push_log(format!("{}  ! {message}", stamp()));
+        self.push_log(format!("{}  ! {message}", stamp()), cx);
         self.last_action = message.clone();
         window.push_notification(Notification::error(message), cx);
         cx.notify();
@@ -909,7 +930,12 @@ impl TreePanel {
                 IconName::PanelBottom,
                 &rust_i18n::t!("ui.app.tree.toggle_output"),
                 cx.listener(|this, _, _, cx| {
-                    this.show_output = !this.show_output;
+                    // Con el dock inferior montado, este botón lo colapsa.
+                    if let Some(bottom) = this.bottom.clone() {
+                        bottom.update(cx, |panel, cx| panel.toggle_open(cx));
+                    } else {
+                        this.show_output = !this.show_output;
+                    }
                     cx.notify();
                 }),
             ))
@@ -1223,10 +1249,26 @@ impl Render for TreePanel {
         })
         .context_menu(move |_ix, entry, menu, _window, _cx| context_menu_for(&weak, entry, menu));
 
-        let output = if self.show_output {
-            Some(self.render_output_panel(cx))
-        } else {
-            None
+        // Dock inferior (M2): si el shell lo montó, la SALIDA y los problemas
+        // viven ahí; si no (demos/spikes), se mantiene la sección propia.
+        let bottom: Option<AnyElement> = match &self.bottom {
+            Some(bottom) => {
+                let height = if bottom.read(cx).is_open() {
+                    tokens::OUTPUT_HEIGHT + 40.0
+                } else {
+                    tokens::OUTPUT_HEIGHT / 6.0
+                };
+                Some(
+                    div()
+                        .flex_none()
+                        .w_full()
+                        .h(px(height))
+                        .child(bottom.clone())
+                        .into_any_element(),
+                )
+            }
+            None if self.show_output => Some(self.render_output_panel(cx).into_any_element()),
+            None => None,
         };
 
         pane_container(SlotKind::Tree, cx)
@@ -1268,7 +1310,7 @@ impl Render for TreePanel {
                             .child(tree_element),
                     ),
             )
-            .children(output)
+            .children(bottom)
     }
 }
 

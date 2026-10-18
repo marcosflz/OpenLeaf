@@ -298,6 +298,12 @@ pub struct ProblemsPanel {
 }
 
 impl ProblemsPanel {
+    /// Cuenta de diagnósticos por severidad (errores, avisos, info): la usa la
+    /// pestaña PROBLEMAS del dock inferior (M2).
+    pub fn total_counts(&self) -> (usize, usize, usize) {
+        self.model.total_counts()
+    }
+
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let text_filter =
             cx.new(|cx| InputState::new(window, cx).placeholder("Filtrar problemas…"));

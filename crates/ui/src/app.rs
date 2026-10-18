@@ -51,10 +51,12 @@ use lsx_latex::{
 use crate::layout::{FocusMode, ShellLayout, SlotKind};
 use crate::notifications;
 use crate::palette::PaletteCommand;
+use crate::panels::bottom::BottomPanel;
 use crate::panels::chat::{ChatPanel, ChatPanelConfig, ChatPanelEvent};
 use crate::panels::editor::{EditorPanel, EditorPanelConfig, EditorPanelEvent};
 use crate::panels::pdf::{PdfPanel, PdfPanelEvent, SyncRect};
 use crate::panels::problems::{ProblemsEvent, ProblemsPanel};
+use crate::panels::symbols::SymbolsPanel;
 use crate::panels::tree::{TreeFsEvent, TreeOpenKind, TreePanelEvent};
 use crate::panels::{Pane, PaneEvent, PaneState, TreePanel, pane_container};
 use crate::permission::{PermissionCard, PermissionRequest};
@@ -220,14 +222,11 @@ impl AppRoot {
             )
         });
         let problems = cx.new(|cx| ProblemsPanel::new(window, cx));
-        let editor = cx.new(|cx| {
-            EditorSlot::new(
-                editor_panel.clone(),
-                problems.clone(),
-                Some(dock.downgrade()),
-                cx,
-            )
-        });
+        // Dock inferior del explorador (M2): PROBLEMAS · SALIDA · SÍMBOLOS.
+        let symbols = cx.new(|cx| SymbolsPanel::new(window, Some(editor_panel.clone()), cx));
+        let bottom = cx.new(|cx| BottomPanel::new(problems.clone(), symbols, cx));
+        tree.update(cx, |tree, cx| tree.attach_bottom(bottom.clone(), cx));
+        let editor = cx.new(|cx| EditorSlot::new(editor_panel.clone(), Some(dock.downgrade()), cx));
         let pdf_panel = cx.new(|cx| PdfPanel::with_cache_mb(settings.pdf.max_cache_mb, cx));
         // `synctex.exe` de la distro portable: lo usan el salto inverso
         // (Ctrl+clic) y el scroll sync inverso (M1-C5). El shell reacciona a
@@ -1709,24 +1708,22 @@ impl Render for ChatSlot {
     }
 }
 
-/// Hoja Editor del shell: editor real (M1-B) + panel de problemas (M1-D).
+/// Hoja Editor del shell: editor real (M1-B). Los problemas viven en el dock
+/// inferior del explorador (M2).
 struct EditorSlot {
     state: PaneState,
     editor: Entity<EditorPanel>,
-    problems: Entity<ProblemsPanel>,
 }
 
 impl EditorSlot {
     fn new(
         editor: Entity<EditorPanel>,
-        problems: Entity<ProblemsPanel>,
         dock_area: Option<WeakEntity<DockArea>>,
         cx: &mut Context<Self>,
     ) -> Self {
         Self {
             state: PaneState::new(SlotKind::Editor, dock_area, cx),
             editor,
-            problems,
         }
     }
 
@@ -1793,8 +1790,8 @@ impl gpui_kit::Focusable for EditorSlot {
 
 impl Render for EditorSlot {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let problems_visible = self.problems.read(cx).is_visible();
-        let mut el = pane_container(SlotKind::Editor, cx)
+        // Los problemas viven en el dock inferior del explorador (M2).
+        pane_container(SlotKind::Editor, cx)
             .flex()
             .flex_col()
             .track_focus(self.state.focus_handle())
@@ -1802,11 +1799,7 @@ impl Render for EditorSlot {
                 gpui_kit::MouseButton::Left,
                 cx.listener(|this, _, window, cx| this.activate_by_user(window, cx)),
             )
-            .child(div().flex_1().min_h_0().child(self.editor.clone()));
-        if problems_visible {
-            el = el.child(div().flex_none().h(px(216.)).child(self.problems.clone()));
-        }
-        el
+            .child(div().flex_1().min_h_0().child(self.editor.clone()))
     }
 }
 

@@ -8,6 +8,9 @@
 //! - [`chat`]: panel de chat IA (M1-E3..E6) — conversación tipada sobre
 //!   `lsx-chat`, tool cards, permisos, pickers y «Arreglar errores con IA».
 //! - [`tree`]: explorador de archivos de producción (M1-A1/F2 seed).
+//! - [`bottom`]: dock inferior del explorador (M2) con las pestañas
+//!   PROBLEMAS · SALIDA · SÍMBOLOS.
+//! - [`symbols`]: paleta de símbolos LaTeX (M2) que inserta en el editor.
 //! - [`placeholder`]: hojas aún sin stream propio.
 //! - [`pane`]: contrato común ([`Pane`], [`PaneState`], [`PaneEvent`]).
 //!
@@ -16,16 +19,20 @@
 //! de comandos con callbacks y el shell los cablea por slots (`EditorSlot`,
 //! `PdfSlot`, `ChatSlot`).
 
+pub mod bottom;
 pub mod chat;
 pub mod editor;
 pub mod pane;
 pub mod pdf;
 pub mod placeholder;
 pub mod problems;
+pub mod symbols;
 pub mod tree;
 
+pub use bottom::{BottomPanel, BottomTab};
 pub use chat::{ChatPanel, ChatPanelConfig};
 pub(crate) use pane::pane_container;
 pub use pane::{Pane, PaneEvent, PaneState};
 pub use placeholder::PlaceholderPanel;
+pub use symbols::SymbolsPanel;
 pub use tree::TreePanel;
