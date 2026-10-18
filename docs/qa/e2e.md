@@ -18,6 +18,11 @@ Precondición: app construida en modo release/debug, raíz portable con `tex/`, 
 | 5d | Apagar el interruptor ⇄ y repetir 5b/5c | Ninguna de las dos direcciones se mueve; el ajuste persiste tras reiniciar |
 | 6 | `Ctrl+Click` sobre esa zona del PDF | El editor vuelve a la línea/columna correcta (marcador temporal visible) |
 | 7 | Abrir panel IA (si no estaba), nueva sesión, pedir "resume el documento en 3 líneas" | Streaming markdown fluido en la burbuja; sin bloquear la UI |
+| 7b | Escribir dos líneas en el chat y pulsar `Enter` / `Shift+Enter` | `Enter` envía; `Shift+Enter` inserta salto de línea sin enviar |
+| 7c | Preguntar algo de LaTeX (p. ej. «convierte esto en una tabla booktabs») | El agente carga la skill `latex-tablas-figuras` (o la que toque) y propone `booktabs`/`tabularx` |
+| 7d | Menú **Permisos** → «Aprobar ediciones del proyecto» y pedir un cambio | No aparece el modal; el archivo cambia igualmente (y el permiso queda persistido en `ai.permissionPreset`) |
+| 7e | Pulsar ↩ en el mensaje anterior (revert) | Diálogo de confirmación → los archivos y el historial vuelven a ese punto; banner «Cambios revertidos» con «Deshacer» |
+| 7f | Dock inferior: cambiar entre PROBLEMAS / SALIDA / SÍMBOLOS y colapsar con el chevron | Las tres pestañas funcionan; el editor no pierde altura útil; SÍMBOLOS inserta el comando en el cursor |
 | 8 | Pedir "añade al final una sección 'Experiencia' con la fecha de hoy" | Aparece tarjeta de herramienta de edición y **modal de permiso** con diff; al aprobar, el archivo cambia y compila; el editor recarga el buffer limpio |
 | 9 | Inyectar un error (paso 3) y pulsar "Arreglar errores con IA" | El agente diagnostica, propone el fix (permiso), se aplica, compila verde; reporte final legible |
 | 10 | Matar `opencode.exe` desde el Administrador de tareas con el chat abierto | El indicador del panel pasa a reconectando → listo en < 15 s; el historial no se pierde |

@@ -68,7 +68,6 @@
 **G1 cerrado (2026-10-17): ✅ PASS** — informe `docs/qa/reports/G1-2026-10-17.md`. E2E: pasos 1–4 y 7 con evidencia visual (`shots/e2e-*.png`); 5–6/8 cubiertos por tests gated + 2 validaciones manuales pendientes (Ctrl+Alt+J y aprobación de permiso en vivo). Gates: fmt/clippy/test verdes (29 suites); live chat verde con **DeepSeek V4.1 Flash**. Siguiente: **M2 (G2)**.
 
 **Feedback del usuario sobre G1 (2026-10-18)**: informe `docs/qa/reports/M1-C5-scroll-sync-2026-10-18.md`.
-
 | Punto | Resultado |
 |---|---|
 | `Ctrl+Alt+J` (validación manual 1) | ✅ funciona — el usuario pide además **scroll sync** en vez de solo resaltado |
@@ -77,6 +76,20 @@
 - **Fix de foco** (`9938b75`): `PaneState::focus_if_outside` — el chrome de la hoja ya no roba el foco al input que el clic acaba de enfocar (afectaba al editor **y** al chat; en GPUI el ratón burbujea de dentro hacia fuera y el slot sobreescribía el foco). Tests de UI nuevos con `TestAppContext` en `crates/ui` (primer uso del harness `gpui-kit/test-support`, pieza de M2): `clic_en_el_composer_permite_escribir`, `clic_en_el_editor_permite_escribir` (fallan sin el fix).
 - **Scroll sync `.tex` ↔ PDF (M1-C5)**: `latex.syncScroll` (default ON) con interruptor en toolbar y Ajustes; avance al mover el cursor (debounce 250 ms, `synctex view` en background, scroll **sin** resaltado) e inverso al desplazar el visor (scroll del editor **sin mover el cursor**), con guarda anti-bucle de 400 ms. `Ctrl+Alt+J` sigue siendo el salto manual con resaltado. De paso: `Ln/Col` y `Pág. n/N` de la status bar ya se actualizan y el **Ctrl+clic inverse vuelve a funcionar** (`set_synctex_exe` no se llamaba nunca desde el shell). 3 tests nuevos + suites verdes.
 - Pendiente de validación manual: (a) seguir el cursor → el PDF se desplaza; (b) desplazar el PDF → el editor se desplaza sin perder el cursor; (c) apagar el interruptor y comprobar que no se mueve nada.
+
+**Segunda ronda de feedback (2026-10-18, misma sesión)**: informe `docs/qa/reports/M2-feedback-2026-10-18-chat-dock-skills.md`.
+
+| Petición | Estado |
+|---|---|
+| `Enter` envía / `Shift+Enter` salto de línea | ✅ `5a71ab5` |
+| Botón de gestión de permisos (no preguntar por cada acción) | ✅ menú con 3 presets (`ask` / `project` / `all`) persistidos |
+| Razonamiento en bloque plegado | ✅ era un bug del reducer (deltas sin tipo → texto duplicado); corregido |
+| Skills de LaTeX **sin instalar globales** | ✅ 4 skills en `assets/skills` + `skills.paths` en `config/opencode.runtime.json` (`2697121`); verificado con `opencode debug skill` |
+| Volver atrás si el agente rompe algo | ✅ revert nativo de opencode por mensaje + «deshacer» |
+| Unificar problemas + SALIDA en pestañas bajo el Explorador | ✅ `a8b95ac` (`BottomPanel`) |
+| Pestaña de símbolos LaTeX insertables con un clic | ✅ ~90 símbolos por categorías con buscador |
+
+Gates de la ronda: fmt/clippy/workspace verdes (lsx-ui 82, lsx-chat 40); evidencia visual `shots/m2-bottom-dock.png`. Pendiente de validación manual: Enter/razonamiento, preset de permisos sin modal, revert con vuelta de archivos, carga de una skill LaTeX y uso de la paleta.
 
 
 **Modelo del chat (petición del usuario, 2026-10-17)**: el producto usa por defecto **`opencode-go/deepseek-v4.1-flash`** (antes gpt-5.6-luna) — fijado en `agent/opencode.json` (`model`) y `config/settings.json` (`ai.model`); verificado contra `GET /config` del server real (commit `aa8573b`). Todos los tests/demos nuevos del chat usan DeepSeek.

@@ -452,6 +452,36 @@ Fixtures: `fixtures/opencode/events/spike-20261017-123649(. -mini).jsonl` + `fix
 - tlmgr: `.bat` siempre exit 0 → decidir por salida; distro vs tlnet desalineada → `install` con fallback `--force` (implementado); prueba real `adjmulticol` (reinstalado, estado final = inicial).
 - Tests gated reales (`LSX_TEST_TEXLIVE=1` + `LSX_TEST_TLMGR_INSTALL=1`): compile cv 3.38 s, diagnósticos correctos, round-trip synctex 78↔79 (±1).
 
+### M2 — Chat (permisos, revert, razonamiento), skills portables y dock inferior (2026-10-18) — VERIFICADO
+
+- **Chat ↔ shell**: nuevo `ChatPanelEvent::PermissionPresetChanged(String)`; el shell lo
+  persiste en `ai.permissionPreset`. Presets en `chat::PermissionPreset`
+  (`ask` | `project` | `all`): con los automáticos el panel responde `always` a
+  `permission.asked` sin abrir el modal (`auto_reply(permission, filepath, project_root)`).
+  Los valores antiguos (`auto`) se aceptan como `all`.
+- **Recomendación de teclado**: `Enter` envía y `Shift+Enter` inserta salto de línea
+  (`capture_key_down` en el contenedor del composer).
+- **Revert (API de opencode 1.18.30)**: `POST /session/:id/revert` body `{messageID}` y
+  `POST /session/:id/unrevert` (deshacen historial **y** archivos);
+  `GET /session/:id/diff?messageID=` disponible para mostrar el diff previo (no usado en
+  v1). Cliente: `ChatClient::{revert,unrevert}`; servicio: `ChatCmd::{Revert{message_id},
+  Unrevert}` + `ChatEvent::{Reverted{message_id},Unreverted}` (recargan historial).
+- **Razonamiento**: los `message.part.delta` no llevan tipo de parte y llegan antes del
+  primer `message.part.updated`; el reducer **promociona** la parte `Text` a `Part::Reasoning`
+  conservando lo recibido (antes: razonamiento como texto normal y parte duplicada).
+- **Skills portables**: opencode 1.18.30 no descubre skills de proyecto; descubre
+  `~/.claude/skills`, `~/.agents/skills` y lo que declare `skills.paths` en la config (relativo
+  al proyecto o absoluto). El supervisor genera `config/opencode.runtime.json`
+  (`ServerSpec.runtime_config` + `skills_dir` → `write_runtime_config`) = config del bundle +
+  ruta absoluta a `assets/skills`; si falla, se usa la del bundle. Skills del producto:
+  `latex-compilar-depurar`, `latex-matematicas`, `latex-tablas-figuras`, `latex-beamer`.
+- **Dock inferior (M2)**: `BottomPanel` (pestañas PROBLEMAS · SALIDA · SÍMBOLOS, colapsable,
+  tope de 200 líneas) montado como hijo de `TreePanel` (`attach_bottom`); sin dock, el árbol
+  conserva su sección de SALIDA. `ProblemsPanel` deja de colgar de `EditorSlot` y expone
+  `total_counts()`. `SymbolsPanel` inserta vía `EditorPanel::insert_active`; nuevo
+  `EditorPanel::active_text(&App)` para QA.
+
+
 ### M1-C5 — Scroll sync `.tex` ↔ PDF + foco de hoja (feedback usuario 2026-10-18) — VERIFICADO
 
 Dos cambios de contrato, con tests de regresión en `crates/ui`:
