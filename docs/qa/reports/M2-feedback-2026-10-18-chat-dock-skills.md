@@ -27,6 +27,11 @@
   entornos con `\begin`/`\end` equilibrados).
 - **Manual con el binario real**: `opencode debug skill` desde el proyecto con
   `OPENCODE_CONFIG=config/opencode.runtime.json` → las 4 skills aparecen (✓).
+- **End-to-end con la app real** (2026-10-18): al arrancar `latex-studio`, el supervisor
+  genera `config/opencode.runtime.json` con
+  `skills.paths = ["<repo>/assets/skills"]` y `opencode debug skill` con esa config lista las
+  cuatro skills (`latex-compilar-depurar`, `latex-matematicas`, `latex-tablas-figuras`,
+  `latex-beamer`).
 - **Visual**: `shots/m2-bottom-dock.png` (dock con las tres pestañas bajo el Explorador,
   editor sin el stack de problemas, header del chat con el menú de permisos).
 
