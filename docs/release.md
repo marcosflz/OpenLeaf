@@ -38,8 +38,30 @@ Inno Setup **no** está instalado en el equipo de desarrollo; el script
 si prefieres compilar en local.
 
 > **Bloqueo actual (P0.4b)**: el repo no tiene remoto, así que la Action no puede
-> correr todavía. Hace falta crear el repositorio en GitHub y hacer el primer push
-> (privado por defecto). Es decisión del usuario.
+> correr todavía. El repositorio destino es **https://github.com/marcosflz/OpenLeaf**
+> y el remoto se configurará desde otro PC. Ver «Continuar desde el otro PC».
+
+## Continuar desde el otro PC (primer push + Action)
+
+```powershell
+git remote add origin https://github.com/marcosflz/OpenLeaf.git
+git push -u origin main
+```
+
+Después, en GitHub: **Actions → installer → Run workflow** (o `git tag v0.1.0 && git push --tags`).
+Al terminar, descarga el artifact `latex-studio-installer` y ejecuta el `Setup.exe`.
+
+Antes de hacer el repo **público** (si algún día se decide), comprobar que sigue limpio:
+
+```powershell
+git grep -I -E '(sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}|AIza[0-9A-Za-z_-]{20,}|BEGIN [A-Z ]*PRIVATE KEY)'
+git ls-files config workspace tex agent     # solo debe salir agent/opencode.json y config/.gitkeep
+```
+
+Estado verificado el 2026-10-18 en este repositorio: 217 ficheros versionados, sin claves ni
+estado de usuario, `main` único con 66 commits y árbol limpio. Los fixtures del proyecto CV
+están anonimizados (`alexrivera`, `example.com`); tu CV real vive en `workspace/`, que está
+ignorado por git y **no** viaja al repo ni al instalador.
 
 ## Ruta B — Local (zip `full` con TeX Live)
 

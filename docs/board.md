@@ -103,6 +103,7 @@ Gate de salida: **G1** (E2E pasos 1–8 + presupuestos §6.3) — requiere tambi
 ## Notas
 
 - **P0.4b**: crear remoto GitHub (privado por defecto) y push para verificar CI verde. Necesita decisión del usuario.
+  - **2026-10-18**: repo destino decidido por el usuario: **https://github.com/marcosflz/OpenLeaf**; el remoto y el primer push se harán desde otro PC. Todo lo demás está maquetado: `cargo xtask dist` (M3-1), `installer/` (M3-2) y `.github/workflows/installer.yml` (construye el `Setup.exe` en CI con el agente descargado de la versión fijada). Runbook: `docs/release.md`. Repo verificado sin claves ni estado de usuario (217 ficheros, `main` limpio).
 - **R6** (AGENTS.md del repo vs producto): test explícito en G1; los proyectos del producto viven en `workspace/` (ignorado por git).
 - **Hallazgo gpui-kit (P0)**: `Button` se importa con `use gpui_kit::component::button::*;` — propagar a los skills `lsx-gpui-patterns`/`lsx-editor-ts` en M0.
 - **Desviación M0 (aprobada por orchestrator)**: los spikes trabajan **directamente sobre `main`** con propiedad estricta de archivos (sin worktrees), para evitar 6 builds completos del árbol GPUI; los streams de M1+ sí usan worktrees+branches. Cada spike: binario propio en `app/src/bin/spike-*.rs` + su crate.
