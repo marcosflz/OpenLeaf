@@ -51,7 +51,7 @@ use lsx_latex::{
 use crate::layout::{FocusMode, ShellLayout, SlotKind};
 use crate::notifications;
 use crate::palette::PaletteCommand;
-use crate::panels::chat::{ChatPanel, ChatPanelConfig};
+use crate::panels::chat::{ChatPanel, ChatPanelConfig, ChatPanelEvent};
 use crate::panels::editor::{EditorPanel, EditorPanelConfig, EditorPanelEvent};
 use crate::panels::pdf::{PdfPanel, PdfPanelEvent, SyncRect};
 use crate::panels::problems::{ProblemsEvent, ProblemsPanel};
@@ -257,6 +257,7 @@ impl AppRoot {
                 ),
             )
         });
+        let chat_events = chat_panel.clone();
         let chat = cx.new(|cx| ChatSlot::new(chat_panel, Some(dock.downgrade()), cx));
 
         let mut dock_layout = DockLayout::h_split();
@@ -383,6 +384,13 @@ impl AppRoot {
                 window,
                 |this, _panel, event: &PdfPanelEvent, window, cx| {
                     this.on_pdf_event(event, window, cx);
+                },
+            ),
+            cx.subscribe_in(
+                &chat_events,
+                window,
+                |this, _panel, event: &ChatPanelEvent, _window, cx| {
+                    this.on_chat_event(event, cx);
                 },
             ),
             cx.subscribe_in(
@@ -985,6 +993,28 @@ impl AppRoot {
             _ => {}
         }
         cx.notify();
+    }
+
+    /// Eventos del panel de chat (persistencia de ajustes que toca el usuario).
+    fn on_chat_event(&mut self, event: &ChatPanelEvent, cx: &mut Context<Self>) {
+        match event {
+            ChatPanelEvent::PermissionPresetChanged(preset) => {
+                self.settings.ai.permission_preset = preset.clone();
+                match self.settings.save(&self.portable) {
+                    Ok(()) => tracing::debug!(
+                        target: "lsx::ui",
+                        preset = %preset,
+                        "ai.permissionPreset guardado"
+                    ),
+                    Err(err) => tracing::warn!(
+                        target: "lsx::ui",
+                        error = %err,
+                        "no se pudo guardar ai.permissionPreset"
+                    ),
+                }
+                cx.notify();
+            }
+        }
     }
 
     /// Eventos del visor PDF: página visible (status bar), scroll del usuario

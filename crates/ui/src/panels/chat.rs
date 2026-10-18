@@ -87,6 +87,16 @@ mod tok {
     pub const R_MD: f32 = 6.;
 }
 
+/// Eventos del panel de chat hacia el shell.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChatPanelEvent {
+    /// El usuario cambió el preset de permisos: el shell lo persiste en
+    /// `ai.permissionPreset`.
+    PermissionPresetChanged(String),
+}
+
+impl EventEmitter<ChatPanelEvent> for ChatPanel {}
+
 /// Paleta oscura «VS Code · Copilot Chat». Copiada del spike aprobado (M0.5):
 /// único punto del panel con hex; no toca el tema global del shell. Los tonos
 /// de texto secundario y bordes se leen del tema (`Ui`), por eso no están aquí.
@@ -99,6 +109,83 @@ mod color {
     pub const SURFACE: u32 = 0x1E2530;
     /// Fondo de bloques de código (más oscuro que el panel).
     pub const CODE_BG: u32 = 0x0E1218;
+}
+
+/// Política de permisos del agente (botón «Permisos» del header).
+///
+/// Se persiste en `ai.permissionPreset`. Con cualquier preset distinto de
+/// [`PermissionPreset::Ask`] el panel responde a `permission.asked` sin abrir
+/// el modal (con `always`, de modo que opencode deja de preguntar).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PermissionPreset {
+    /// Preguntar siempre (modal con diff por petición).
+    #[default]
+    Ask,
+    /// Aprobar las ediciones dentro del proyecto; el resto (bash, etc.) pregunta.
+    ProjectEdits,
+    /// Aprobar todo automáticamente.
+    All,
+}
+
+impl PermissionPreset {
+    /// Valor de `ai.permissionPreset` (`ask` | `project` | `all`).
+    pub fn as_setting(self) -> &'static str {
+        match self {
+            Self::Ask => "ask",
+            Self::ProjectEdits => "project",
+            Self::All => "all",
+        }
+    }
+
+    /// Acepta también los valores antiguos (`auto`) y sinónimos.
+    pub fn from_setting(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "project" | "project-edits" | "edits" => Self::ProjectEdits,
+            "all" | "auto" | "yolo" => Self::All,
+            _ => Self::Ask,
+        }
+    }
+
+    /// Etiqueta del menú.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Ask => "Preguntar siempre",
+            Self::ProjectEdits => "Aprobar ediciones del proyecto",
+            Self::All => "Aprobar todo",
+        }
+    }
+
+    /// Descripción para el tooltip.
+    fn hint(self) -> &'static str {
+        match self {
+            Self::Ask => "Permisos: cada edición o comando pide confirmación con su diff",
+            Self::ProjectEdits => {
+                "Permisos: las ediciones dentro del proyecto se aprueban solas (bash sigue preguntando)"
+            }
+            Self::All => "Permisos: todo se aprueba automáticamente (sin modales)",
+        }
+    }
+
+    /// Respuesta automática a una petición, si este preset la cubre.
+    pub fn auto_reply(
+        self,
+        permission: &str,
+        filepath: Option<&str>,
+        project_root: &Path,
+    ) -> Option<PermissionReply> {
+        match self {
+            Self::Ask => None,
+            Self::All => Some(PermissionReply::Always),
+            Self::ProjectEdits => {
+                let is_edit = permission.eq_ignore_ascii_case("edit");
+                let inside = filepath.is_some_and(|path| {
+                    let path = Path::new(path);
+                    path.starts_with(project_root)
+                });
+                (is_edit && inside).then_some(PermissionReply::Always)
+            }
+        }
+    }
 }
 
 /// Configuración de creación del panel (la construye el shell).
@@ -121,6 +208,8 @@ pub struct ChatPanelConfig {
     pub agent: String,
     /// `ai.showReasoning`.
     pub show_reasoning: bool,
+    /// `ai.permissionPreset`.
+    pub permission_preset: PermissionPreset,
     /// `tex/bin/windows` + `agent` para el PATH del server.
     pub path_prepend: Vec<PathBuf>,
     /// Handle de estado compartido (dot IA de la status bar).
@@ -155,6 +244,7 @@ impl ChatPanelConfig {
             model: ai.model.clone(),
             agent: ai.agent.clone(),
             show_reasoning: ai.show_reasoning,
+            permission_preset: PermissionPreset::from_setting(&ai.permission_preset),
             path_prepend: vec![root.tex_dir().join("bin").join("windows"), root.agent_dir()],
             status,
             editor,
@@ -269,6 +359,8 @@ pub struct ChatPanel {
     fix_diagnostics: Vec<FixDiagnosticLine>,
     fix_log_tail: Option<String>,
     show_reasoning: bool,
+    /// Preset de permisos vigente (botón «Permisos»).
+    permission_preset: PermissionPreset,
     /// Permisos ya mostrados como modal (no repetir).
     permission_shown: BTreeSet<String>,
 }
@@ -288,6 +380,7 @@ impl ChatPanel {
 
         let mut panel = Self {
             show_reasoning: config.show_reasoning,
+            permission_preset: config.permission_preset,
             config,
             conversation: Conversation::default(),
             service: None,
@@ -483,13 +576,14 @@ impl ChatPanel {
                 self.permission_shown.clear();
             }
             ChatEvent::Stream(event) => {
-                // Los permisos abren modal; el resto se reduce sin más.
+                // Los permisos abren modal (o se responden solos según el
+                // preset); el resto se reduce sin más.
                 if let lsx_chat::events::SpikeEvent::PermissionAsked { request_id, .. } =
                     event.as_ref()
                 {
                     let request_id = request_id.clone();
                     self.conversation.apply_stream(&event);
-                    self.open_permission_modal(&request_id, window, cx);
+                    self.answer_permission(&request_id, window, cx);
                 } else {
                     self.conversation.apply_stream(&event);
                 }
@@ -529,6 +623,32 @@ impl ChatPanel {
     }
 
     /// Convierte `permission.asked` en el modal de [`PermissionCard`] y manda
+    /// Atiende un `permission.asked`: con el preset en «preguntar» abre el
+    /// modal; con los presets automáticos responde sin molestar al usuario.
+    fn answer_permission(&mut self, request_id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.replay.is_some() {
+            return;
+        }
+        if let Some(entry) = self.conversation.permission(request_id)
+            && let Some(reply) = self.permission_preset.auto_reply(
+                &entry.permission,
+                entry.filepath.as_deref(),
+                &self.config.project_root,
+            )
+        {
+            let request_id = request_id.to_owned();
+            tracing::info!(
+                preset = self.permission_preset.as_setting(),
+                permission = %entry.permission,
+                "permiso respondido automáticamente por el preset"
+            );
+            self.conversation.note_reply(&request_id, reply.as_str());
+            self.send_command(ChatCmd::Permission { request_id, reply }, cx);
+            return;
+        }
+        self.open_permission_modal(request_id, window, cx);
+    }
+
     /// la decisión al servicio (M1-E4).
     fn open_permission_modal(
         &mut self,
@@ -653,6 +773,11 @@ impl ChatPanel {
     }
 
     fn on_send(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
+        self.send_current(window, cx);
+    }
+
+    /// Envía lo escrito en el composer (botón, o `Enter` sin modificadores).
+    fn send_current(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.replay.is_some()
             || self.server != ServerPhase::Ready
             || self.conversation.streaming()
@@ -878,6 +1003,7 @@ impl ChatPanel {
                 this.child(self.chip("replay", ui.warning))
             })
             .child(self.render_agent_menu(ui, cx))
+            .child(self.render_permission_menu(cx))
             .child(self.render_model_menu(ui, model_full, cx))
             .child(self.render_sessions_menu(ui, cx))
             .child(
@@ -960,6 +1086,58 @@ impl ChatPanel {
                     ));
                 }
                 menu
+            })
+    }
+
+    /// Cambia el preset de permisos y avisa al shell para persistirlo.
+    fn select_permission_preset(&mut self, preset: PermissionPreset, cx: &mut Context<Self>) {
+        if self.permission_preset == preset {
+            return;
+        }
+        self.permission_preset = preset;
+        cx.emit(ChatPanelEvent::PermissionPresetChanged(
+            preset.as_setting().to_owned(),
+        ));
+        cx.notify();
+    }
+
+    /// Menú «Permisos» del header (M1-E4): preguntar / ediciones / todo.
+    fn render_permission_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let current = self.permission_preset;
+        let weak = cx.weak_entity();
+        Button::new("chat-permissions")
+            .small()
+            .ghost()
+            .compact()
+            .icon(IconName::ShieldCheck)
+            .dropdown_caret(true)
+            .selected(current != PermissionPreset::Ask)
+            .tooltip(current.hint())
+            .disabled(self.replay.is_some())
+            .dropdown_menu_with_anchor(Anchor::BottomRight, move |menu, _window, _cx| {
+                let mut menu = menu.label("Permisos de la IA");
+                for preset in [
+                    PermissionPreset::Ask,
+                    PermissionPreset::ProjectEdits,
+                    PermissionPreset::All,
+                ] {
+                    let weak = weak.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(preset.label())
+                            .checked(preset == current)
+                            .on_click(move |_, _window, cx| {
+                                let _ = weak.update(cx, |panel, cx| {
+                                    panel.select_permission_preset(preset, cx);
+                                });
+                            }),
+                    );
+                }
+                menu.separator().item(
+                    PopupMenuItem::new(
+                        "«Aprobar todo» no pide confirmación: úsalo si tienes copias",
+                    )
+                    .disabled(true),
+                )
             })
     }
 
@@ -1734,6 +1912,19 @@ impl ChatPanel {
                             .px(px(8.))
                             .pt(px(6.))
                             .pb(px(6.))
+                            // `Enter` envía; `Shift+Enter` mete salto de línea.
+                            // Va en captura (antes del textarea) para que el
+                            // salto no llegue a insertarse.
+                            .capture_key_down(cx.listener(
+                                |panel, event: &KeyDownEvent, window, cx| {
+                                    let enter =
+                                        matches!(event.keystroke.key.as_str(), "enter" | "return");
+                                    if enter && !event.keystroke.modifiers.shift {
+                                        cx.stop_propagation();
+                                        panel.send_current(window, cx);
+                                    }
+                                },
+                            ))
                             .child(
                                 Textarea::new(&self.textarea)
                                     .appearance(false)
@@ -1906,7 +2097,7 @@ mod tests {
         ParentElement as _, Render, Styled as _, TestAppContext, VisualTestContext, Window,
     };
 
-    use super::{ChatPanel, ChatPanelConfig};
+    use super::{ChatPanel, ChatPanelConfig, PermissionPreset};
     use crate::layout::SlotKind;
     use crate::panels::pane::{PaneState, pane_container};
     use crate::status::channel;
@@ -1956,6 +2147,7 @@ mod tests {
                 model: None,
                 agent: "build".to_owned(),
                 show_reasoning: false,
+                permission_preset: PermissionPreset::Ask,
                 path_prepend: Vec::new(),
                 status,
                 editor: None,
@@ -1973,6 +2165,61 @@ mod tests {
         cx.update(|window, cx| window.draw(cx).clear(cx));
         let textarea = cx.read(|cx| chat.read(cx).textarea.clone());
         f(cx, chat, textarea)
+    }
+
+    /// Los presets de permisos deciden cuándo se puede prescindir del modal.
+    #[test]
+    fn los_presets_de_permisos_deciden_sin_preguntar() {
+        use lsx_chat::protocol::PermissionReply;
+        use std::path::Path;
+
+        let root = Path::new("C:/proyecto");
+        let inside = Some("C:/proyecto/main.tex");
+        let outside = Some("C:/otro/main.tex");
+
+        // Preguntar: nunca responde solo.
+        assert_eq!(PermissionPreset::Ask.auto_reply("edit", inside, root), None);
+
+        // Ediciones del proyecto: aprueba dentro; fuera y bash preguntan.
+        assert_eq!(
+            PermissionPreset::ProjectEdits.auto_reply("edit", inside, root),
+            Some(PermissionReply::Always)
+        );
+        assert_eq!(
+            PermissionPreset::ProjectEdits.auto_reply("edit", outside, root),
+            None
+        );
+        assert_eq!(
+            PermissionPreset::ProjectEdits.auto_reply("bash", inside, root),
+            None
+        );
+        assert_eq!(
+            PermissionPreset::ProjectEdits.auto_reply("edit", None, root),
+            None
+        );
+
+        // Todo: aprueba cualquier petición, incluso sin ruta.
+        assert_eq!(
+            PermissionPreset::All.auto_reply("bash", None, root),
+            Some(PermissionReply::Always)
+        );
+
+        // Ida y vuelta de lo que se persiste en `ai.permissionPreset`.
+        for preset in [
+            PermissionPreset::Ask,
+            PermissionPreset::ProjectEdits,
+            PermissionPreset::All,
+        ] {
+            assert_eq!(PermissionPreset::from_setting(preset.as_setting()), preset);
+        }
+        assert_eq!(
+            PermissionPreset::from_setting("auto"),
+            PermissionPreset::All
+        );
+        assert_eq!(
+            PermissionPreset::from_setting("project-edits"),
+            PermissionPreset::ProjectEdits
+        );
     }
 
     /// Regresión (QA 2026-10-18): el clic en el composer debe dejar el foco en

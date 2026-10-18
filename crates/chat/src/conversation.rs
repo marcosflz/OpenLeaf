@@ -649,6 +649,23 @@ impl Conversation {
                             *current = text.clone();
                         }
                         *current_done = *done;
+                    } else if let Part::Text { text: streamed, .. } = existing {
+                        // Los `message.part.delta` llegan antes que el primer
+                        // snapshot y no traen el tipo de parte: hasta ahora se
+                        // materializaban como Texto, así que el razonamiento se
+                        // veía como texto normal (y luego se duplicaba al llegar
+                        // este snapshot). Se promociona la parte conservando lo
+                        // ya recibido.
+                        let merged = if text.len() >= streamed.len() {
+                            text.clone()
+                        } else {
+                            streamed.clone()
+                        };
+                        *existing = Part::Reasoning {
+                            part_id: part_id.clone(),
+                            text: merged,
+                            done: *done,
+                        };
                     }
                     return;
                 }
@@ -891,6 +908,65 @@ mod tests {
             markdown: text.to_owned(),
             streaming: true,
         }
+    }
+
+    #[test]
+    fn delta_de_razonamiento_antes_del_snapshot_no_duplica_texto() {
+        // Caso real (fixture spike-20261017): opencode emite
+        // `message.part.delta` de una parte de razonamiento antes de su primer
+        // `message.part.updated`. El delta no trae el tipo, así que la parte
+        // nace como Texto y el snapshot debe promocionarla, no duplicarla.
+        let mut conversation = Conversation::default();
+        for delta in ["Voy a ", "revisar ", "el documento."] {
+            conversation.apply_stream(&SpikeEvent::PartDelta {
+                session_id: "ses_1".to_owned(),
+                message_id: "msg_1".to_owned(),
+                part_id: "prt_reason".to_owned(),
+                field: "text".to_owned(),
+                delta: delta.to_owned(),
+            });
+        }
+        conversation.apply_part(&SpikePartUpdate::Reasoning {
+            message_id: "msg_1".to_owned(),
+            part_id: "prt_reason".to_owned(),
+            text: "Voy a revisar el documento.".to_owned(),
+            done: false,
+        });
+        // Y el texto de la respuesta va en otra parte.
+        conversation.apply_part(&SpikePartUpdate::Text {
+            message_id: "msg_1".to_owned(),
+            part_id: "prt_text".to_owned(),
+            markdown: "Listo.".to_owned(),
+            streaming: false,
+        });
+
+        let message = &conversation.messages[0];
+        assert_eq!(
+            message.parts.len(),
+            2,
+            "sin duplicados: {:#?}",
+            message.parts
+        );
+        let reasoning = message
+            .parts
+            .iter()
+            .find(|part| matches!(part, Part::Reasoning { .. }))
+            .expect("la parte es de razonamiento");
+        assert!(matches!(
+            reasoning,
+            Part::Reasoning { text, .. } if text == "Voy a revisar el documento."
+        ));
+        // El razonamiento no se cuela como texto visible del mensaje: la única
+        // parte de texto es la respuesta.
+        let visible: String = message
+            .parts
+            .iter()
+            .filter_map(|part| match part {
+                Part::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(visible.trim(), "Listo.");
     }
 
     #[test]
