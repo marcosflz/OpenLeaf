@@ -28,3 +28,9 @@ image = { version = "0.25", default-features = false }
 # M1-F4 (stream F, `new_project.rs`): selector nativo de carpeta destino del
 # wizard «Nuevo proyecto». Se usa en modo async para no bloquear el hilo UI.
 rfd.workspace = true
+
+[dev-dependencies]
+# Tests de UI con `TestAppContext` (`#[gpui_kit::test]`): clics y teclado
+# reales sobre los paneles. Requiere la feature `test-support` del kit
+# (mismo patrón que `crates/editor`).
+gpui-kit = { workspace = true, features = ["test-support"] }

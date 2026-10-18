@@ -1654,3 +1654,95 @@ impl Render for EditorPanel {
             .child(self.render_status(cx))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    // Nota (gpui-kit 0.7.3): con `test-support` el glob `gpui_kit::*` trae la
+    // macro `test` de GPUI y tapa la de Rust; aquí se importa explícito.
+    use std::path::{Path, PathBuf};
+
+    use gpui_kit::test::TestWindowExt as _;
+    use gpui_kit::{
+        AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, MouseButton,
+        ParentElement as _, Render, Styled as _, TestAppContext, VisualTestContext, Window,
+    };
+
+    use super::EditorPanel;
+    use crate::layout::SlotKind;
+    use crate::panels::pane::{PaneState, pane_container};
+
+    /// Chrome mínimo de una hoja del shell (igual que `EditorSlot`, M1-A2).
+    struct Host {
+        pane: PaneState,
+        editor: Entity<EditorPanel>,
+    }
+
+    impl Render for Host {
+        fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            pane_container(SlotKind::Editor, cx)
+                .size_full()
+                .track_focus(self.pane.focus_handle())
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, window, cx| {
+                        this.pane.focus_if_outside(window, cx);
+                    }),
+                )
+                .child(self.editor.clone())
+        }
+    }
+
+    /// Proyecto temporal con un `main.tex` mínimo.
+    fn temp_project() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("lsx-ui-editor-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("directorio de test");
+        std::fs::write(dir.join("main.tex"), "\\documentclass{article}\n").expect("main.tex");
+        dir
+    }
+
+    fn with_editor<R>(
+        root: &Path,
+        cx: &mut TestAppContext,
+        f: impl FnOnce(&mut VisualTestContext, Entity<EditorPanel>) -> R,
+    ) -> R {
+        cx.update(gpui_kit::init);
+        let mut panel = None;
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let editor = cx.new(|cx| EditorPanel::new(root, root.join("config"), window, cx));
+            editor.update(cx, |panel, cx| {
+                assert!(
+                    panel.open_file("main.tex", None, window, cx),
+                    "abre main.tex"
+                );
+            });
+            panel = Some(editor.clone());
+            Host {
+                pane: PaneState::new(SlotKind::Editor, None, cx),
+                editor,
+            }
+        });
+        let editor = panel.unwrap();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        f(cx, editor)
+    }
+
+    /// Regresión (QA 2026-10-18): el clic dentro del editor debe dejar el foco
+    /// en el documento; si el chrome de la hoja se lo roba, no se puede
+    /// escribir.
+    #[test]
+    fn clic_en_el_editor_permite_escribir() {
+        let root = temp_project();
+        with_editor(&root, &mut TestAppContext::single(), |cx, editor| {
+            let doc = cx.read(|cx| editor.read(cx).docs[0].editor.clone());
+            let input_id = ("input", doc.entity_id());
+            cx.update(|window, cx| window.click(input_id, cx));
+            cx.update(|window, cx| window.input("hola", cx));
+            let text = cx.read(|cx| doc.read(cx).text().to_string());
+            assert!(
+                text.contains("hola"),
+                "el editor debe recibir lo tecleado; texto: {text:?}"
+            );
+        });
+    }
+}

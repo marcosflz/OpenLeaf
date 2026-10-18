@@ -94,6 +94,18 @@ impl PaneState {
         cx.notify();
     }
 
+    /// Foco de teclado de la hoja al entrar en ella (focus mode `Ctrl+Alt+M`).
+    ///
+    /// No roba el foco a un control interno (el editor del panel Editor, el
+    /// composer del chat): el clic ya lo enfocó, y quedarse con el foco a nivel
+    /// de hoja dejaba al usuario sin poder escribir. Solo toma el foco si
+    /// estaba fuera de la hoja.
+    pub fn focus_if_outside<T: Render>(&self, window: &mut Window, cx: &mut Context<T>) {
+        if !self.focus.contains_focused(window, cx) {
+            self.focus.focus(window, cx);
+        }
+    }
+
     /// Marca la hoja como (in)activa; solo repinta.
     pub fn set_active<T: Render>(&mut self, active: bool, cx: &mut Context<T>) {
         if self.active == active {
@@ -132,7 +144,7 @@ pub trait Pane:
     /// hoja, todas las hojas son "la activa de su grupo" a la vez.
     fn activate_by_user(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let kind = self.pane_state().kind();
-        self.pane_state().focus_handle().clone().focus(window, cx);
+        self.pane_state().focus_if_outside(window, cx);
         cx.emit(PaneEvent::Activated(kind));
     }
 

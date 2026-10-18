@@ -1891,3 +1891,109 @@ pub fn detect_main_file(project_root: &Path) -> Option<String> {
     let main = lsx_latex::detect_main(root, None, None).ok()??;
     main.strip_prefix(root).ok().map(|rel| rel.to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    // Nota (gpui-kit 0.7.3, `lib.rs` líneas 97-99): con `test-support` el glob
+    // `gpui_kit::*` trae la macro `test` de GPUI y tapa la de Rust, así que
+    // este módulo importa los tipos explícitamente (sin `use super::*`).
+    use std::path::PathBuf;
+
+    use gpui_kit::component::input::TextareaState;
+    use gpui_kit::test::TestWindowExt as _;
+    use gpui_kit::{
+        AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, MouseButton,
+        ParentElement as _, Render, Styled as _, TestAppContext, VisualTestContext, Window,
+    };
+
+    use super::{ChatPanel, ChatPanelConfig};
+    use crate::layout::SlotKind;
+    use crate::panels::pane::{PaneState, pane_container};
+    use crate::status::channel;
+
+    /// Chrome mínimo de una hoja del shell: igual que `ChatSlot` (M1-A2), el
+    /// contenedor de la hoja reclama el foco al hacer clic dentro.
+    struct Host {
+        pane: PaneState,
+        chat: Entity<ChatPanel>,
+    }
+
+    impl Render for Host {
+        fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            pane_container(SlotKind::Chat, cx)
+                .size_full()
+                .track_focus(self.pane.focus_handle())
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, window, cx| {
+                        // Mismo camino que `ChatSlot`: `Pane::activate_by_user`.
+                        this.pane.focus_if_outside(window, cx);
+                    }),
+                )
+                .child(self.chat.clone())
+        }
+    }
+
+    /// Panel de chat en una ventana de test, dentro del chrome de hoja.
+    ///
+    /// `auto_start` en `false` y un `opencode.exe` inexistente: el panel no
+    /// arranca server ni gasta tokens.
+    fn with_chat<R>(
+        cx: &mut TestAppContext,
+        f: impl FnOnce(&mut VisualTestContext, Entity<ChatPanel>, Entity<TextareaState>) -> R,
+    ) -> R {
+        cx.update(gpui_kit::init);
+        let mut chat = None;
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let (status, _rx) = channel();
+            let config = ChatPanelConfig {
+                exe: PathBuf::from("agent/opencode-no-existe.exe"),
+                config_json: PathBuf::from("agent/opencode.json"),
+                project_root: PathBuf::from("."),
+                project_name: "test".to_owned(),
+                auto_start: false,
+                port: None,
+                model: None,
+                agent: "build".to_owned(),
+                show_reasoning: false,
+                path_prepend: Vec::new(),
+                status,
+                editor: None,
+                problems: None,
+                main_file: None,
+            };
+            let panel = cx.new(|cx| ChatPanel::new(window, cx, config));
+            chat = Some(panel.clone());
+            Host {
+                pane: PaneState::new(SlotKind::Chat, None, cx),
+                chat: panel,
+            }
+        });
+        let chat = chat.unwrap();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let textarea = cx.read(|cx| chat.read(cx).textarea.clone());
+        f(cx, chat, textarea)
+    }
+
+    /// Regresión (QA 2026-10-18): el clic en el composer debe dejar el foco en
+    /// el textarea. Si el chrome de la hoja se lo roba, el usuario no puede
+    /// escribir nada en el chat.
+    #[test]
+    fn clic_en_el_composer_permite_escribir() {
+        if std::env::var_os("LSX_CHAT_REPLAY").is_some()
+            || std::env::var_os("LSX_SPIKE_REPLAY").is_some()
+        {
+            eprintln!("replay activo: el composer es de solo lectura, test omitido");
+            return;
+        }
+        with_chat(&mut TestAppContext::single(), |cx, _chat, textarea| {
+            // Identificador del `Input` interno (gpui-component lo registra
+            // como `("input", entity_id)` cuando el llamador no fija uno).
+            let input_id = ("input", textarea.entity_id());
+            cx.update(|window, cx| window.click(input_id, cx));
+            cx.update(|window, cx| window.input("hola", cx));
+            let text = cx.read(|cx| textarea.read(cx).value().to_string());
+            assert_eq!(text, "hola", "el composer debe recibir lo tecleado");
+        });
+    }
+}
