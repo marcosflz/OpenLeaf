@@ -153,6 +153,9 @@ impl SpikeEditor {
                 EditorPanelEvent::DirtyChanged { dirty } => {
                     format!("dirty    {dirty}")
                 }
+                EditorPanelEvent::CursorMoved { path, line, column } => {
+                    format!("cursor   {path}:{line}:{column}")
+                }
                 EditorPanelEvent::Status { message } => format!("status   {message}"),
             };
             shell.push_log(line, cx);

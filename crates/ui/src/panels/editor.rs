@@ -75,6 +75,16 @@ pub enum EditorPanelEvent {
     Saved { path: String },
     /// Cambió el dirty del documento activo.
     DirtyChanged { dirty: bool },
+    /// Línea/columna del cursor del documento activo (1-based). Lo consume el
+    /// shell para la status bar y para el scroll sync (M1-C5).
+    CursorMoved {
+        /// Ruta relativa con `/`.
+        path: String,
+        /// Línea 1-based.
+        line: u32,
+        /// Columna 1-based.
+        column: u32,
+    },
     /// Mensaje corto para la status bar del shell.
     Status { message: String },
 }
@@ -109,6 +119,9 @@ struct OpenDocument {
     /// Versión del último backup escrito (no se repiten backups idénticos).
     last_backup_version: Option<u64>,
     _sub: Subscription,
+    /// Observador del `notify` del editor: detecta cambios de cursor (scroll
+    /// sync / status bar, M1-C5).
+    _cursor_obs: Subscription,
 }
 
 /// Panel del editor. Ver la cabecera del módulo.
@@ -130,6 +143,9 @@ pub struct EditorPanel {
     backup_interval_secs: u64,
     seconds: u64,
     session_dirty: bool,
+    /// Última señal de cursor emitida (`ruta`, línea, columna) para no repetir
+    /// `CursorMoved` en cada `notify` (el cursor parpadea y notifica a menudo).
+    cursor_sig: Option<(String, u32, u32)>,
     /// Recuperaciones pendientes de proponer (se abre el modal tras el frame).
     pending_recovery: Vec<(DocId, BackupEntry)>,
     focus_handle: FocusHandle,
@@ -232,6 +248,7 @@ impl EditorPanel {
             backup_interval_secs: config.backup_interval_secs.max(1),
             seconds: 0,
             session_dirty: false,
+            cursor_sig: None,
             pending_recovery: Vec::new(),
             focus_handle: cx.focus_handle(),
             _subs: subs,
@@ -288,12 +305,16 @@ impl EditorPanel {
             }
         });
         let meta = DocumentMeta::new(doc_id, &rel, text_file.eol, text_file.had_bom);
+        // El cursor del editor notifica a menudo (parpadeo, selección): el
+        // observador filtra por `(ruta, línea)` antes de emitir.
+        let cursor_obs = cx.observe(&editor, |this, _editor, cx| this.on_editor_notify(cx));
         self.docs.push(OpenDocument {
             meta,
             editor,
             diagnostics: Vec::new(),
             last_backup_version: None,
             _sub: sub,
+            _cursor_obs: cursor_obs,
         });
         let ix = self.docs.len() - 1;
         self.active = Some(ix);
@@ -481,6 +502,64 @@ impl EditorPanel {
         self.active
             .and_then(|ix| self.docs.get(ix))
             .map(|doc| rel_key(&doc.meta.rel))
+    }
+
+    /// Desplaza el documento que contiene `line` **sin mover el cursor ni
+    /// robar el foco**: es el scroll sync inverso (PDF → editor, M1-C5).
+    ///
+    /// Si `file` está fuera de la raíz o no está abierto, no hace nada (el
+    /// scroll sync nunca abre pestañas por su cuenta). Cambia de pestaña si el
+    /// origen pertenece a otro documento ya abierto.
+    pub fn scroll_to_source(
+        &mut self,
+        file: &Path,
+        line: u32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let rel = file
+            .strip_prefix(&self.root)
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|_| file.to_path_buf());
+        let Some(ix) = self.index_by_rel(&rel) else {
+            return;
+        };
+        if self.active != Some(ix) {
+            self.set_active_index(ix, false, window, cx);
+        }
+        self.scroll_to_line(line, cx);
+    }
+
+    /// Desplaza el documento activo para dejar `line` (1-based) en la parte
+    /// superior del viewport **sin mover el cursor**: es el scroll sync
+    /// inverso (PDF → editor, M1-C5), que no debe interrumpir lo que escribes.
+    pub fn scroll_to_line(&mut self, line: u32, cx: &mut Context<Self>) {
+        let Some(ix) = self.active else {
+            return;
+        };
+        let line = line.max(1);
+        self.docs[ix].editor.update(cx, |state, cx| {
+            let line_height = state.line_height().unwrap_or(px(18.));
+            let y = -f32::from(line_height) * (line - 1) as f32;
+            state.set_scroll_offset(point(px(0.), px(y)), cx);
+        });
+    }
+
+    /// Observador del editor: emite [`EditorPanelEvent::CursorMoved`] cuando el
+    /// cursor del documento activo cambia de línea/columna (o de archivo). El
+    /// editor notifica también por parpadeo del cursor, así que se filtra por
+    /// señal.
+    fn on_editor_notify(&mut self, cx: &mut Context<Self>) {
+        let (Some(path), Some((line, column))) = (self.active_path(), self.active_cursor(cx))
+        else {
+            return;
+        };
+        let sig = (path.clone(), line, column);
+        if self.cursor_sig.as_ref() == Some(&sig) {
+            return;
+        }
+        self.cursor_sig = Some(sig);
+        cx.emit(EditorPanelEvent::CursorMoved { path, line, column });
     }
 
     /// `true` si el documento activo tiene cambios sin guardar.
@@ -1664,7 +1743,7 @@ mod tests {
     use gpui_kit::test::TestWindowExt as _;
     use gpui_kit::{
         AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, MouseButton,
-        ParentElement as _, Render, Styled as _, TestAppContext, VisualTestContext, Window,
+        ParentElement as _, Render, Styled as _, TestAppContext, VisualTestContext, Window, px,
     };
 
     use super::EditorPanel;
@@ -1692,9 +1771,10 @@ mod tests {
         }
     }
 
-    /// Proyecto temporal con un `main.tex` mínimo.
-    fn temp_project() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("lsx-ui-editor-{}", std::process::id()));
+    /// Proyecto temporal con un `main.tex` mínimo (una carpeta por test: dos
+    /// tests del mismo binario corren en paralelo).
+    fn temp_project(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("lsx-ui-editor-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("directorio de test");
         std::fs::write(dir.join("main.tex"), "\\documentclass{article}\n").expect("main.tex");
@@ -1732,7 +1812,7 @@ mod tests {
     /// escribir.
     #[test]
     fn clic_en_el_editor_permite_escribir() {
-        let root = temp_project();
+        let root = temp_project("foco");
         with_editor(&root, &mut TestAppContext::single(), |cx, editor| {
             let doc = cx.read(|cx| editor.read(cx).docs[0].editor.clone());
             let input_id = ("input", doc.entity_id());
@@ -1743,6 +1823,35 @@ mod tests {
                 text.contains("hola"),
                 "el editor debe recibir lo tecleado; texto: {text:?}"
             );
+        });
+    }
+
+    /// El scroll sync inverso (PDF → editor, M1-C5) desplaza el documento sin
+    /// mover el cursor.
+    #[test]
+    fn scroll_to_line_desplaza_sin_mover_el_cursor() {
+        let root = temp_project("scroll");
+        // Documento con líneas suficientes para poder desplazarse.
+        let body: String = (1..=200).map(|n| format!("% línea {n}\n")).collect();
+        std::fs::write(root.join("main.tex"), body).expect("main.tex largo");
+        with_editor(&root, &mut TestAppContext::single(), |cx, editor| {
+            let doc = cx.read(|cx| editor.read(cx).docs[0].editor.clone());
+            let before = cx.read(|cx| doc.read(cx).cursor_position());
+            cx.update(|window, cx| {
+                let _ = window;
+                editor.update(cx, |panel, cx| panel.scroll_to_line(120, cx));
+            });
+            cx.update(|window, cx| window.render_frame(cx));
+            cx.update(|window, cx| window.render_frame(cx));
+            let (offset, before_after) = cx.read(|cx| {
+                let state = doc.read(cx);
+                (state.scroll_offset().y, state.cursor_position())
+            });
+            assert!(
+                offset < px(-100.),
+                "el documento debe quedar desplazado; offset: {offset:?}"
+            );
+            assert_eq!(before, before_after, "el scroll sync no mueve el cursor");
         });
     }
 }

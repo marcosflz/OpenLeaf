@@ -451,3 +451,16 @@ Fixtures: `fixtures/opencode/events/spike-20261017-123649(. -mini).jsonl` + `fix
 - latexmk `-outdir`: todo al outdir; exit 12 en error TeX; **rerun post-auto-install requiere `-g`** (si no, "up-to-date"); stdout sin %.
 - tlmgr: `.bat` siempre exit 0 → decidir por salida; distro vs tlnet desalineada → `install` con fallback `--force` (implementado); prueba real `adjmulticol` (reinstalado, estado final = inicial).
 - Tests gated reales (`LSX_TEST_TEXLIVE=1` + `LSX_TEST_TLMGR_INSTALL=1`): compile cv 3.38 s, diagnósticos correctos, round-trip synctex 78↔79 (±1).
+
+### M1-C5 — Scroll sync `.tex` ↔ PDF + foco de hoja (feedback usuario 2026-10-18) — VERIFICADO
+
+Dos cambios de contrato, con tests de regresión en `crates/ui`:
+
+- **Foco (fix)**: `PaneState::focus_if_outside(&self, window, cx)` sustituye el `focus()` incondicional de `Pane::activate_by_user`. Al hacer clic dentro de una hoja, el chrome solo toma el foco si estaba **fuera** de ella (`FocusHandle::contains_focused`); antes el `on_mouse_down` del slot sobreescribía el foco que el clic acababa de dar al input y **no se podía escribir** ni en el editor ni en el composer del chat.
+- **Scroll sync (M1-C5)**: `latex.syncScroll` (bool, default `true`, esquema §7) + toggle en la toolbar (`IconName::ArrowLeftRight`) y en Ajustes.
+  - `EditorPanelEvent::CursorMoved { path, line, column }` (1-based), emitido por observación del `notify` del editor y filtrado por señal `(ruta, línea, columna)`; cubre de paso el Ln/Col de la status bar (que antes no recibía `StatusMessage::Cursor`).
+  - `EditorPanel::scroll_to_line(line, cx)` / `scroll_to_source(file, line, window, cx)`: desplazan con `EditorState::set_scroll_offset` **sin mover el cursor ni el foco** (nunca abren pestañas nuevas).
+  - `PdfPanelEvent::ViewportScrolled`: emitido desde `on_visible_range` cuando el `scroll_top` cambió >2 px (incluye scroll programático; el shell lo filtra).
+  - `PdfPanel::source_point_at_top() -> Option<(page0, x_bp, y_bp)>` (helper puro `source_point_at`) y `PdfPanel::scroll_to_sync_rect(rect, cx)` (scroll **sin** resaltado).
+  - Shell: debounce de 250 ms por dirección; forward asíncrono (`background_spawn`) con clave `(ruta, línea)` para no repetir el CLI; guarda anti-bucle de 400 ms (`reverse_allowed`) tras un scroll programático; `InverseReason::{Click, Scroll}` decide salto (Ctrl+clic) vs scroll (sync). `Ctrl+Alt+J` se conserva como salto con resaltado manual.
+  - **`PdfPanel::set_synctex_exe` ahora se llama en el shell** (antes nadie lo llamaba ⇒ Ctrl+clic inverse estaba muerto); el `InverseJump` se consume por evento, no por callback.

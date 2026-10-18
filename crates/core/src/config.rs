@@ -238,6 +238,11 @@ pub struct LatexSettings {
     /// Limpiar auxiliares tras compilar con éxito.
     #[serde(default)]
     pub clean_on_success: bool,
+    /// Sincronización de scroll `.tex` ↔ PDF (SyncTeX automático).
+    /// Con `true`, al mover el cursor el visor se desplaza solo, y al
+    /// desplazar el visor el editor se desplaza (sin mover el cursor).
+    #[serde(default = "default_true")]
+    pub sync_scroll: bool,
     /// Campos desconocidos.
     #[serde(flatten)]
     pub extra: ExtraFields,
@@ -266,6 +271,7 @@ impl Default for LatexSettings {
             extra_args: Vec::new(),
             timeout_secs: latex_timeout(),
             clean_on_success: false,
+            sync_scroll: true,
             extra: ExtraFields::new(),
         }
     }

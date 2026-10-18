@@ -178,6 +178,7 @@ fn parse_f32_in_range(value: &str, (min, max): (f32, f32)) -> Result<f32, String
 impl Render for SettingsForm {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let auto_compile = self.settings.latex.auto_compile;
+        let sync_scroll = self.settings.latex.sync_scroll;
         let theme_labels = [
             rust_i18n::t!("ui.app.settings.theme_dark").to_string(),
             rust_i18n::t!("ui.app.settings.theme_light").to_string(),
@@ -198,6 +199,16 @@ impl Render for SettingsForm {
                     .checked(auto_compile)
                     .on_change(cx.listener(|this, checked, _window, cx| {
                         this.settings.latex.auto_compile = *checked;
+                        cx.notify();
+                    })),
+                cx,
+            ))
+            .child(row(
+                rust_i18n::t!("ui.app.settings.sync_scroll").to_string(),
+                Switch::new("settings-sync-scroll")
+                    .checked(sync_scroll)
+                    .on_change(cx.listener(|this, checked, _window, cx| {
+                        this.settings.latex.sync_scroll = *checked;
                         cx.notify();
                     })),
                 cx,

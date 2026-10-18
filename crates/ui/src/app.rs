@@ -24,7 +24,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use gpui_kit::assets::IconName;
@@ -53,18 +53,26 @@ use crate::notifications;
 use crate::palette::PaletteCommand;
 use crate::panels::chat::{ChatPanel, ChatPanelConfig};
 use crate::panels::editor::{EditorPanel, EditorPanelConfig, EditorPanelEvent};
-use crate::panels::pdf::{PdfPanel, SyncRect};
+use crate::panels::pdf::{PdfPanel, PdfPanelEvent, SyncRect};
 use crate::panels::problems::{ProblemsEvent, ProblemsPanel};
 use crate::panels::tree::{TreeFsEvent, TreeOpenKind, TreePanelEvent};
 use crate::panels::{Pane, PaneEvent, PaneState, TreePanel, pane_container};
 use crate::permission::{PermissionCard, PermissionRequest};
 use crate::project::ProjectService;
 use crate::settings_ui;
-use crate::status::{AiState, StatusHandle, StatusModel};
+use crate::status::{AiState, StatusHandle, StatusMessage, StatusModel};
 use crate::{status_bar, theme, toolbar};
 
 /// Debounce del guardado del layout (ms) tras `DockEvent::LayoutChanged`.
 const LAYOUT_SAVE_DEBOUNCE: Duration = Duration::from_millis(450);
+/// Quietud del cursor/scroll antes de lanzar un SyncTeX del scroll sync (ms).
+const SYNC_DEBOUNCE: Duration = Duration::from_millis(250);
+/// Ventana en la que se ignoran los avisos de scroll del PDF tras un scroll
+/// programático (anti-bucle del scroll sync, M1-C5).
+const SYNC_LOOP_GUARD: Duration = Duration::from_millis(400);
+/// Espera máxima del debounce del forward: si el cursor no deja de moverse
+/// (p. ej. escribiendo un párrafo), el sync se aplica igualmente.
+const SYNC_MAX_WAIT: Duration = Duration::from_millis(1500);
 /// Ancho de referencia cuando el dock aún no se ha medido (primer frame).
 const DEFAULT_REFERENCE_WIDTH: Pixels = px(1600.);
 
@@ -89,6 +97,25 @@ pub fn root_error_title() -> String {
 /// Pista de la ventana de error de arranque.
 pub fn root_error_hint() -> String {
     rust_i18n::t!("ui.app.window.root_error_hint").to_string()
+}
+
+/// Por qué se está resolviendo un SyncTeX inverso (PDF → `.tex`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum InverseReason {
+    /// Ctrl+clic sobre el visor: salta y mueve el cursor.
+    #[default]
+    Click,
+    /// Scroll sync: desplaza el editor sin tocar el cursor.
+    Scroll,
+}
+
+/// ¿Procede aplicar el scroll sync inverso (PDF → editor)?
+///
+/// Falso si está desactivado o si el visor se acaba de desplazar por un sync
+/// hacia el PDF: sin esta guarda, el scroll programático reentraría como scroll
+/// del usuario y las dos direcciones se perseguirían (M1-C5).
+fn reverse_allowed(enabled: bool, last_forward: Option<Instant>, now: Instant) -> bool {
+    enabled && last_forward.is_none_or(|at| now.duration_since(at) >= SYNC_LOOP_GUARD)
 }
 
 /// Registra los atajos globales del shell (una vez, en `lsx_ui::init`).
@@ -128,6 +155,20 @@ pub struct AppRoot {
     project_root: Option<PathBuf>,
     latex_settings: LatexSettings,
     compile: Option<Arc<CompileController>>,
+    /// Scroll sync automático `.tex` ↔ PDF (`latex.syncScroll`, M1-C5).
+    sync_scroll: bool,
+    /// Secuencia del debounce del forward (la última señal gana).
+    sync_seq: u64,
+    /// Inicio de la ráfaga de movimientos de cursor pendiente de sync.
+    sync_burst_start: Option<Instant>,
+    /// Secuencia del debounce del inverso (la última señal gana).
+    reverse_seq: u64,
+    /// Último destino ya sincronizado hacia el PDF (`ruta`, línea).
+    last_synced: Option<(String, u32)>,
+    /// Instante del último scroll programático del PDF (guarda anti-bucle).
+    last_forward_sync: Option<Instant>,
+    /// Motivo del próximo [`PdfPanelEvent::InverseJump`].
+    pending_inverse: InverseReason,
     focus: FocusHandle,
     palette: Entity<CommandState>,
     layout_generation: u64,
@@ -188,19 +229,12 @@ impl AppRoot {
             )
         });
         let pdf_panel = cx.new(|cx| PdfPanel::with_cache_mb(settings.pdf.max_cache_mb, cx));
-        {
-            let editor_for_inverse = editor_panel.clone();
-            pdf_panel.update(cx, |panel, cx| {
-                panel.on_inverse_jump(
-                    move |jump, window, cx| {
-                        editor_for_inverse.update(cx, |editor, cx| {
-                            editor.open_path(jump.file, Some(jump.line), window, cx);
-                        });
-                    },
-                    cx,
-                );
-            });
-        }
+        // `synctex.exe` de la distro portable: lo usan el salto inverso
+        // (Ctrl+clic) y el scroll sync inverso (M1-C5). El shell reacciona a
+        // `PdfPanelEvent::InverseJump` para decidir salto vs scroll.
+        pdf_panel.update(cx, |panel, _cx| {
+            panel.set_synctex_exe(portable.synctex_exe());
+        });
         let pdf = cx.new(|cx| PdfSlot::new(pdf_panel.clone(), Some(dock.downgrade()), cx));
         // Chat real (M1-E3..E6): el panel arranca el supervisor si `ai.autoStart`
         // (ver `panels::chat`); en modo replay (`LSX_CHAT_REPLAY`) no hay server.
@@ -293,6 +327,7 @@ impl AppRoot {
 
         // --- Compilación (integración M1): motor real + cola con debounce -----
         let latex_settings = bridge_latex_settings(&settings.latex);
+        let sync_scroll = settings.latex.sync_scroll;
         let startup_main: Option<Utf8PathBuf> = project_root
             .as_deref()
             .and_then(Utf8Path::from_path)
@@ -341,6 +376,13 @@ impl AppRoot {
                     if let Some(controller) = &this.compile {
                         controller.notify_change();
                     }
+                },
+            ),
+            cx.subscribe_in(
+                &pdf_panel,
+                window,
+                |this, _panel, event: &PdfPanelEvent, window, cx| {
+                    this.on_pdf_event(event, window, cx);
                 },
             ),
             cx.subscribe_in(
@@ -446,6 +488,13 @@ impl AppRoot {
             project_root,
             latex_settings,
             compile,
+            sync_scroll,
+            sync_seq: 0,
+            sync_burst_start: None,
+            reverse_seq: 0,
+            last_synced: None,
+            last_forward_sync: None,
+            pending_inverse: InverseReason::default(),
             focus,
             palette,
             layout_generation: 0,
@@ -916,14 +965,201 @@ impl AppRoot {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let EditorPanelEvent::Opened { path } = event
-            && path.ends_with(".tex")
-            && let (Some(controller), Some(root)) = (&self.compile, &self.project_root)
-            && let Some(root) = Utf8Path::from_path(root)
-        {
-            controller.set_request(self.latex_settings.request(root, path.as_str()));
+        match event {
+            EditorPanelEvent::Opened { path } => {
+                if path.ends_with(".tex")
+                    && let (Some(controller), Some(root)) = (&self.compile, &self.project_root)
+                    && let Some(root) = Utf8Path::from_path(root)
+                {
+                    controller.set_request(self.latex_settings.request(root, path.as_str()));
+                }
+            }
+            EditorPanelEvent::CursorMoved { line, column, .. } => {
+                // Status bar + scroll sync `.tex` → PDF (M1-C5).
+                self.status_handle.send(StatusMessage::Cursor {
+                    line: *line,
+                    column: *column,
+                });
+                self.schedule_sync_forward(cx);
+            }
+            _ => {}
         }
         cx.notify();
+    }
+
+    /// Eventos del visor PDF: página visible (status bar), scroll del usuario
+    /// (scroll sync inverso) y saltos inverse.
+    fn on_pdf_event(&mut self, event: &PdfPanelEvent, window: &mut Window, cx: &mut Context<Self>) {
+        match event {
+            PdfPanelEvent::PageChanged { page, count } => {
+                self.status_handle.send(StatusMessage::Page {
+                    current: *page,
+                    total: *count,
+                });
+            }
+            PdfPanelEvent::ViewportScrolled => self.schedule_reverse_sync(window, cx),
+            PdfPanelEvent::InverseJump(jump) => match std::mem::take(&mut self.pending_inverse) {
+                InverseReason::Click => {
+                    self.editor_panel.update(cx, |editor, cx| {
+                        editor.open_path(&jump.file, Some(jump.line), window, cx);
+                    });
+                }
+                // Scroll sync: desplaza sin mover el cursor ni robar el foco.
+                InverseReason::Scroll => {
+                    self.editor_panel.update(cx, |editor, cx| {
+                        editor.scroll_to_source(&jump.file, jump.line, window, cx);
+                    });
+                }
+            },
+            PdfPanelEvent::DocumentReady { .. }
+            | PdfPanelEvent::DocumentFailed { .. }
+            | PdfPanelEvent::ZoomChanged { .. } => {}
+        }
+    }
+
+    // --- scroll sync `.tex` ↔ PDF (M1-C5) ------------------------------------
+
+    /// Alterna el scroll sync y lo persiste en `latex.syncScroll`.
+    fn toggle_sync_scroll(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sync_scroll = !self.sync_scroll;
+        self.settings.latex.sync_scroll = self.sync_scroll;
+        if self.sync_scroll {
+            // Al reactivar, fuerza un sync aunque el cursor no se haya movido.
+            self.last_synced = None;
+        }
+        let message = if self.sync_scroll {
+            rust_i18n::t!("ui.app.toolbar.sync_scroll_on")
+        } else {
+            rust_i18n::t!("ui.app.toolbar.sync_scroll_off")
+        };
+        notifications::info(message.to_string(), window, cx);
+        if let Err(err) = self.settings.save(&self.portable) {
+            tracing::warn!(target: "lsx::ui", error = %err, "no se pudo guardar latex.syncScroll");
+        }
+        cx.notify();
+    }
+
+    /// Programa el forward del scroll sync tras un movimiento de cursor
+    /// (debounce: el cursor se mueve a ráfagas).
+    ///
+    /// Si el usuario no deja de moverse (escribiendo), el sync se aplica
+    /// igualmente pasado [`SYNC_MAX_WAIT`] en vez de quedarse esperando.
+    fn schedule_sync_forward(&mut self, cx: &mut Context<Self>) {
+        if !self.sync_scroll {
+            return;
+        }
+        let burst_start = *self.sync_burst_start.get_or_insert_with(Instant::now);
+        self.sync_seq = self.sync_seq.wrapping_add(1);
+        let generation = self.sync_seq;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SYNC_DEBOUNCE).await;
+            this.update(cx, |root, cx| {
+                if root.sync_seq == generation || burst_start.elapsed() >= SYNC_MAX_WAIT {
+                    root.sync_burst_start = None;
+                    root.apply_sync_forward(cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Forward del scroll sync: cursor → posición en el PDF, sin resaltado.
+    ///
+    /// El CLI corre en el executor de fondo (~50 ms) y si no hay cambio de
+    /// destino (`ruta:línea`) no se vuelve a invocar.
+    fn apply_sync_forward(&mut self, cx: &mut Context<Self>) {
+        if !self.sync_scroll {
+            return;
+        }
+        let Some(pdf_path) = self.last_pdf.clone() else {
+            return;
+        };
+        let Some(rel) = self.editor_panel.read(cx).active_path() else {
+            return;
+        };
+        let Some((line, _column)) = self.editor_panel.read(cx).active_cursor(cx) else {
+            return;
+        };
+        let Some(root) = self.project_root.clone() else {
+            return;
+        };
+        if self.last_synced.as_ref() == Some(&(rel.clone(), line)) {
+            return;
+        }
+        self.last_synced = Some((rel.clone(), line));
+        let src = root.join(&rel);
+        let (Some(pdf), Some(src)) = (
+            Utf8Path::from_path(&pdf_path).map(|path| path.to_path_buf()),
+            Utf8Path::from_path(&src).map(|path| path.to_path_buf()),
+        ) else {
+            return;
+        };
+        let Ok(exe) = Utf8PathBuf::from_path_buf(self.portable.synctex_exe()) else {
+            return;
+        };
+        let synctex = lsx_latex::Synctex::new(exe);
+        let key = (rel.clone(), line);
+        cx.spawn(async move |this, cx| {
+            let records = cx
+                .background_spawn(async move { synctex.forward_all(&pdf, &src, line, 0) })
+                .await;
+            let Ok(records) = records else {
+                // Sin sidecar (o CLI caído): permite reintentar al volver aquí.
+                this.update(cx, |root, _cx| root.last_synced = None).ok();
+                return;
+            };
+            let Some(first) = records.first().copied() else {
+                this.update(cx, |root, _cx| root.last_synced = None).ok();
+                return;
+            };
+            this.update(cx, |root, cx| {
+                // El cursor pudo moverse mientras corría el CLI: solo se aplica
+                // si este destino sigue siendo el último pedido.
+                if root.last_synced.as_ref() == Some(&key) {
+                    let rect = SyncRect::from_record(&first);
+                    root.last_forward_sync = Some(Instant::now());
+                    root.pdf_panel
+                        .update(cx, |panel, cx| panel.scroll_to_sync_rect(rect, cx));
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Programa el inverso del scroll sync tras un desplazamiento del visor.
+    fn schedule_reverse_sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !reverse_allowed(self.sync_scroll, self.last_forward_sync, Instant::now()) {
+            return;
+        }
+        self.reverse_seq = self.reverse_seq.wrapping_add(1);
+        let generation = self.reverse_seq;
+        cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(SYNC_DEBOUNCE).await;
+            this.update_in(cx, |root, window, cx| {
+                if root.reverse_seq == generation {
+                    root.apply_reverse_sync(window, cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Inverso del scroll sync: borde superior del visor → línea del `.tex`
+    /// (el `InverseJump` resultante se aplica como scroll, no como salto).
+    fn apply_reverse_sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.sync_scroll {
+            return;
+        }
+        let Some((page0, x_bp, y_bp)) = self.pdf_panel.read(cx).source_point_at_top() else {
+            return;
+        };
+        self.pending_inverse = InverseReason::Scroll;
+        self.pdf_panel.update(cx, |panel, cx| {
+            panel.inverse_at(page0, x_bp, y_bp, window, cx);
+        });
     }
 
     /// SyncTeX forward (Ctrl+Alt+J): cursor → rectángulo en el PDF.
@@ -1053,6 +1289,8 @@ impl AppRoot {
     ) {
         self.warnings = settings.validate();
         self.settings = settings;
+        // El diálogo de ajustes también puede cambiar `latex.syncScroll`.
+        self.sync_scroll = self.settings.latex.sync_scroll;
         theme::apply(&self.settings, cx);
         match self.settings.save(&self.portable) {
             Ok(()) => notifications::success(
@@ -1200,6 +1438,19 @@ impl AppRoot {
             ))
             .child(div().flex_1())
             .child(toggles)
+            .child(toolbar::separator(cx))
+            .child(toolbar::icon_button(
+                cx,
+                "toolbar-sync-scroll",
+                IconName::ArrowLeftRight,
+                if self.sync_scroll {
+                    rust_i18n::t!("ui.app.toolbar.sync_scroll_on").to_string()
+                } else {
+                    rust_i18n::t!("ui.app.toolbar.sync_scroll_off").to_string()
+                },
+                self.sync_scroll,
+                cx.listener(|this, _, window, cx| this.toggle_sync_scroll(window, cx)),
+            ))
             .child(toolbar::separator(cx))
             .child(toolbar::icon_button(
                 cx,
@@ -1671,6 +1922,29 @@ mod tests {
             .into_iter()
             .filter(|kind| layout.is_collapsed(*kind))
             .collect()
+    }
+
+    #[test]
+    fn el_inverso_del_scroll_sync_se_bloquea_tras_un_scroll_programatico() {
+        let now = Instant::now();
+        // Desactivado: nunca.
+        assert!(!reverse_allowed(false, None, now));
+        // Activado y sin forward reciente: sí.
+        assert!(reverse_allowed(true, None, now));
+        // Activado pero el visor acaba de desplazarse por el sync: se ignora
+        // (si no, las dos direcciones se perseguirían).
+        assert!(!reverse_allowed(true, Some(now), now));
+        assert!(!reverse_allowed(
+            true,
+            Some(now),
+            now + SYNC_LOOP_GUARD - Duration::from_millis(1)
+        ));
+        // Pasada la ventana de guarda vuelve a permitirse.
+        assert!(reverse_allowed(
+            true,
+            Some(now),
+            now + SYNC_LOOP_GUARD + Duration::from_millis(1)
+        ));
     }
 
     #[test]

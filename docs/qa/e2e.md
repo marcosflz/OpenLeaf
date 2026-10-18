@@ -13,6 +13,9 @@ Precondición: app construida en modo release/debug, raíz portable con `tex/`, 
 | 3 | Añadir `\undefinedcmd{}` en el cuerpo, guardar | El error aparece en el panel de problemas y marcado en el editor (línea correcta); deshacer y guardar → compila verde |
 | 4 | Quitar `\usepackage{lastpage}` y compilar con un paquete *no instalado* equivalente | Auto-install vía tlmgr (banner de progreso) → recompila → verde (con `latex.autoInstallPackages: true`) |
 | 5 | Poner el cursor en una línea conocida del cuerpo y `Ctrl+Alt+J` | El PDF hace scroll a la página correcta y resalta la zona correspondiente (~±20 pt) |
+| 5b | Mover el cursor por el cuerpo (flechas) con `latex.syncScroll` activo (interruptor ⇄ de la toolbar) | El PDF **se desplaza solo** siguiendo la línea, sin resaltado; `Ln/Col` de la status bar se actualiza |
+| 5c | Desplazar el PDF con la rueda (varias páginas) | El editor se desplaza a la línea origen **sin mover el cursor** y se puede seguir escribiendo; la `Pág. n/N` se actualiza |
+| 5d | Apagar el interruptor ⇄ y repetir 5b/5c | Ninguna de las dos direcciones se mueve; el ajuste persiste tras reiniciar |
 | 6 | `Ctrl+Click` sobre esa zona del PDF | El editor vuelve a la línea/columna correcta (marcador temporal visible) |
 | 7 | Abrir panel IA (si no estaba), nueva sesión, pedir "resume el documento en 3 líneas" | Streaming markdown fluido en la burbuja; sin bloquear la UI |
 | 8 | Pedir "añade al final una sección 'Experiencia' con la fecha de hoy" | Aparece tarjeta de herramienta de edición y **modal de permiso** con diff; al aprobar, el archivo cambia y compila; el editor recarga el buffer limpio |
@@ -22,6 +25,7 @@ Precondición: app construida en modo release/debug, raíz portable con `tex/`, 
 | 12 | Copiar la carpeta portable a otra ruta con espacios y acentos (`D:\prueba con espacios\`) y abrir | Arranca, encuentra `tex/` y `agent/`, compila y chatea sin reconfigurar |
 
 Notas:
-- Los pasos 3, 5, 6 requieren `-synctex=1` (default) y el visor en modo "PDF en vivo".
+- Los pasos 3, 5, 6 requieren `-synctex=1` (default), el sidecar `main.synctex.gz` junto al PDF y el visor en modo "PDF en vivo". Sin sidecar, SyncTeX responde `NotAvailable` y el scroll sync no mueve nada.
+- Los pasos 5b–5d requieren `latex.syncScroll: true` (default) y `synctex.exe` en la distro (`tex/bin/windows`).
 - El paso 4 usa un paquete real no instalado; documentar en el reporte cuál se usó (`tlmgr info --only-installed`).
 - El paso 11 es bloqueante para el gate G1 (job objects).

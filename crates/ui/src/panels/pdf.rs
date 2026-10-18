@@ -69,6 +69,8 @@ const FIT_MARGIN_X: f32 = 12.0;
 const PREFETCH_PAGES: usize = 1;
 /// Pasos "bonitos" del zoom manual.
 const ZOOM_STEPS: [f32; 9] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0, 4.0];
+/// Cambio mínimo de scroll (px) para avisar al shell del desplazamiento.
+const SCROLL_REPORT_EPSILON_PX: f32 = 2.0;
 
 /// Modo de zoom del visor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -141,6 +143,32 @@ impl SyncRect {
     }
 }
 
+/// `(page0, x_bp, y_bp)` del borde superior del viewport a partir del scroll.
+///
+/// - `top`: px de contenido del scroll; `slot`: alto de cada slot de página en
+///   px; `page_size(page)`: `(ancho, alto)` de la página en px lógicos.
+/// - `x_bp` es el centro horizontal de la página: la columna no es relevante
+///   para `synctex edit`.
+///
+/// Función pura (testeable sin documento abierto); la usa
+/// [`PdfPanel::source_point_at_top`] para el scroll sync inverso (M1-C5).
+fn source_point_at(
+    top: f32,
+    slot: f32,
+    page_count: u32,
+    page_size: impl Fn(u32) -> (f32, f32),
+    zoom: f32,
+) -> Option<(u32, f32, f32)> {
+    if page_count == 0 || slot <= 0.0 || zoom <= 0.0 {
+        return None;
+    }
+    let page = ((top.max(0.0) / slot).floor() as u32).min(page_count - 1);
+    let (w_px, h_px) = page_size(page);
+    let top_in_slot = (slot - h_px) / 2.0;
+    let y_px = (top.max(0.0) - (page as f32 * slot + top_in_slot)).clamp(0.0, h_px.max(0.0));
+    Some((page, (w_px / 2.0) / zoom, y_px / zoom))
+}
+
 /// Origen en el `.tex` al que saltar desde el PDF (Ctrl+clic).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InverseJump {
@@ -176,6 +204,10 @@ pub enum PdfPanelEvent {
     DocumentFailed { path: PathBuf, message: String },
     /// La página superior visible cambió.
     PageChanged { page: u32, count: u32 },
+    /// El usuario ha desplazado el visor (rueda, barra o teclado). El shell lo
+    /// usa para el scroll sync inverso (M1-C5): al asentarse el scroll, pide
+    /// [`PdfPanel::source_point_at_top`] y resuelve el origen con SyncTeX.
+    ViewportScrolled,
     /// Zoom/modo cambiados (para persistir en settings).
     ZoomChanged { zoom: f32, mode: ZoomMode },
     /// Ctrl+clic sobre el PDF resolvió una posición del `.tex`.
@@ -286,6 +318,9 @@ pub struct PdfPanel {
     scroll: UniformListScrollHandle,
     /// Rango visible actual (de la última pasada del callback del list).
     visible_range: Range<usize>,
+    /// Último `scroll_top` comunicado al shell (evita repetir
+    /// [`PdfPanelEvent::ViewportScrolled`] en cada frame).
+    reported_scroll_top: f32,
     /// Página superior visible (1-based) para el indicador.
     current_page: u32,
     /// Texturas por `(página 0-based, escala en milésimas)`.
@@ -343,6 +378,7 @@ impl PdfPanel {
             dpr: 1.0,
             scroll: UniformListScrollHandle::new(),
             visible_range: 0..0,
+            reported_scroll_top: 0.0,
             current_page: 1,
             images: HashMap::new(),
             inflight: HashSet::new(),
@@ -560,6 +596,25 @@ impl PdfPanel {
         self.scroll_to_rect(rect);
         self.reflash_later(SYNC_MARK_TTL + Duration::from_millis(60), cx);
         cx.notify();
+    }
+
+    /// Scroll silencioso al `rect` de SyncTeX, **sin** resaltado: es el scroll
+    /// sync automático (M1-C5), donde el salto continuo haría ruido visual.
+    pub fn scroll_to_sync_rect(&mut self, rect: SyncRect, cx: &mut Context<Self>) {
+        self.scroll_to_rect(rect);
+        cx.notify();
+    }
+
+    /// Posición del `.tex` correspondiente al borde superior del viewport
+    /// (`page0`, `x_bp`, `y_bp`). Base del scroll sync inverso (M1-C5).
+    pub fn source_point_at_top(&self) -> Option<(u32, f32, f32)> {
+        source_point_at(
+            self.scroll_top(),
+            self.slot_height(),
+            self.page_count(),
+            |page| self.page_size_px(page),
+            self.zoom,
+        )
     }
 
     /// SyncTeX forward: resuelve `src:line` con el CLI real y resalta la caja.
@@ -1067,6 +1122,13 @@ impl PdfPanel {
     /// calcula con el offset de scroll y el viewport medido.
     fn on_visible_range(&mut self, _callback_range: Range<usize>, cx: &mut Context<Self>) {
         let range = self.computed_visible_range();
+        // El visor se ha desplazado (rueda, barra o scroll programático): el
+        // shell decide si es un scroll del usuario para el sync inverso.
+        let top = self.scroll_top();
+        if (top - self.reported_scroll_top).abs() > SCROLL_REPORT_EPSILON_PX {
+            self.reported_scroll_top = top;
+            cx.emit(PdfPanelEvent::ViewportScrolled);
+        }
         if range != self.visible_range {
             self.scroll_seq += 1;
             self.visible_range = range.clone();
@@ -1745,9 +1807,38 @@ mod tests {
     // `#[test]` estándar en este módulo.
     use super::{
         PAGE_GAP, SyncRect, ZOOM_MAX, ZOOM_MIN, ZoomMode, fit_page_zoom, fit_width_zoom,
-        next_zoom_step, normalize_lexical, quantize_zoom,
+        next_zoom_step, normalize_lexical, quantize_zoom, source_point_at,
     };
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn source_point_at_top_mapea_scroll_a_pagina_y_bp() {
+        // 2 páginas de 100×200 px, slots de 216 px (200 + PAGE_GAP), zoom 1.
+        let size = |_page: u32| (100.0, 200.0);
+        let slot = 200.0 + PAGE_GAP;
+        // Arriba del todo: primera página, y = 8 px (centrado del slot) → bp.
+        let (page, x, y) = source_point_at(0.0, slot, 2, size, 1.0).unwrap();
+        assert_eq!(page, 0);
+        assert!((x - 50.0).abs() < 1e-4, "x centrado: {x}");
+        assert!(y.abs() < 1e-4, "y recortado a 0 dentro del margen: {y}");
+        // Mitad del slot de la 2ª página.
+        let middle_page2 = slot + 8.0 + 100.0;
+        let (page, _x, y) = source_point_at(middle_page2, slot, 2, size, 1.0).unwrap();
+        assert_eq!(page, 1);
+        assert!((y - 100.0).abs() < 1e-4, "y en px = bp con zoom 1: {y}");
+        // Con zoom 2 los px lógicos doblan y los bp vuelven a su escala.
+        let zoom2 = |_page: u32| (200.0, 400.0);
+        let (page, _x, y) = source_point_at(108.0, 416.0, 2, zoom2, 2.0).unwrap();
+        assert_eq!(page, 0);
+        assert!((y - 50.0).abs() < 1e-4, "y en bp con zoom 2: {y}");
+        // Más allá del final: se recorta a la última página.
+        let (page, _x, y) = source_point_at(slot * 9.0, slot, 2, size, 1.0).unwrap();
+        assert_eq!(page, 1);
+        assert!(y <= 200.0);
+        // Sin páginas o sin layout no hay punto.
+        assert!(source_point_at(0.0, slot, 0, size, 1.0).is_none());
+        assert!(source_point_at(0.0, 0.0, 2, size, 1.0).is_none());
+    }
 
     #[test]
     fn fit_width_y_fit_page() {

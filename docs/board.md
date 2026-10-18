@@ -67,6 +67,18 @@
 
 **G1 cerrado (2026-10-17): ✅ PASS** — informe `docs/qa/reports/G1-2026-10-17.md`. E2E: pasos 1–4 y 7 con evidencia visual (`shots/e2e-*.png`); 5–6/8 cubiertos por tests gated + 2 validaciones manuales pendientes (Ctrl+Alt+J y aprobación de permiso en vivo). Gates: fmt/clippy/test verdes (29 suites); live chat verde con **DeepSeek V4.1 Flash**. Siguiente: **M2 (G2)**.
 
+**Feedback del usuario sobre G1 (2026-10-18)**: informe `docs/qa/reports/M1-C5-scroll-sync-2026-10-18.md`.
+
+| Punto | Resultado |
+|---|---|
+| `Ctrl+Alt+J` (validación manual 1) | ✅ funciona — el usuario pide además **scroll sync** en vez de solo resaltado |
+| Aprobar permiso en el chat (validación manual 2) | ❌ **bug**: no se podía escribir en el chat |
+
+- **Fix de foco** (`9938b75`): `PaneState::focus_if_outside` — el chrome de la hoja ya no roba el foco al input que el clic acaba de enfocar (afectaba al editor **y** al chat; en GPUI el ratón burbujea de dentro hacia fuera y el slot sobreescribía el foco). Tests de UI nuevos con `TestAppContext` en `crates/ui` (primer uso del harness `gpui-kit/test-support`, pieza de M2): `clic_en_el_composer_permite_escribir`, `clic_en_el_editor_permite_escribir` (fallan sin el fix).
+- **Scroll sync `.tex` ↔ PDF (M1-C5)**: `latex.syncScroll` (default ON) con interruptor en toolbar y Ajustes; avance al mover el cursor (debounce 250 ms, `synctex view` en background, scroll **sin** resaltado) e inverso al desplazar el visor (scroll del editor **sin mover el cursor**), con guarda anti-bucle de 400 ms. `Ctrl+Alt+J` sigue siendo el salto manual con resaltado. De paso: `Ln/Col` y `Pág. n/N` de la status bar ya se actualizan y el **Ctrl+clic inverse vuelve a funcionar** (`set_synctex_exe` no se llamaba nunca desde el shell). 3 tests nuevos + suites verdes.
+- Pendiente de validación manual: (a) seguir el cursor → el PDF se desplaza; (b) desplazar el PDF → el editor se desplaza sin perder el cursor; (c) apagar el interruptor y comprobar que no se mueve nada.
+
+
 **Modelo del chat (petición del usuario, 2026-10-17)**: el producto usa por defecto **`opencode-go/deepseek-v4.1-flash`** (antes gpt-5.6-luna) — fijado en `agent/opencode.json` (`model`) y `config/settings.json` (`ai.model`); verificado contra `GET /config` del server real (commit `aa8573b`). Todos los tests/demos nuevos del chat usan DeepSeek.
 
 Gate de salida: **G1** (E2E pasos 1–8 + presupuestos §6.3) — requiere también E/F; el orchestrator integra los paneles en el shell conforme aterrizan.

@@ -168,6 +168,7 @@ impl SpikeC1 {
                     format!("falló la carga: {message}")
                 }
                 PdfPanelEvent::PageChanged { page, count } => format!("pág {page}/{count}"),
+                PdfPanelEvent::ViewportScrolled => "scroll".to_owned(),
                 PdfPanelEvent::ZoomChanged { zoom, mode } => {
                     format!("zoom {:.0}% ({})", zoom * 100.0, mode.as_setting())
                 }
