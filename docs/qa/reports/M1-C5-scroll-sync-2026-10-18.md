@@ -102,8 +102,26 @@ cargo test --workspace                     → 29 suites OK (lsx-ui: 76 tests)
 cargo build --release -p latex-studio      → OK · copiado a dist/m0-demo/latex-studio.exe
 ```
 
-### Pendiente de validación manual (no automatizable)
+### Comprobación con el proyecto real (CLI, 2026-10-18)
 
+`workspace/cv/plantilla-clasica` tiene `main.pdf` + `main.synctex.gz` (14 KB) y la distro
+tiene `tex/bin/windows/synctex.exe`; las dos llamadas que usa el sync devuelven datos:
+
+```
+$ synctex view -i 25:0:<abs>/main.tex -o main.pdf
+Page:1  x:160.33  y:54.65  v:54.88  W:540.0  H:18.88
+  → SyncRect::from_record = (pág 1, x 160.33, y 36.0, w 540.0, h 18.88)
+
+$ synctex edit -o 1:300:100:main.pdf
+Input:.../plantilla-clasica/./main.tex      (normalizado por lsx-latex)
+Line:61  Column:-1
+  → origen del borde superior del visor = main.tex:61
+```
+
+Es decir, la capa de datos de ambas direcciones está verificada contra el corpus real;
+lo único que falta es el gesto en vivo (cursor/rueda), que requiere interacción humana.
+
+### Pendiente de validación manual (no automatizable)
 1. Mover el cursor en `main.tex` con el sync activado → el PDF se desplaza solo a
    la zona correspondiente (sin resaltado).
 2. Desplazar el PDF con la rueda → el editor se desplaza a la línea origen, el
