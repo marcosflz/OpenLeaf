@@ -187,12 +187,22 @@ impl AppRoot {
     pub fn new(
         portable: PortableRoot,
         settings: Settings,
-        warnings: Vec<ConfigWarning>,
+        mut warnings: Vec<ConfigWarning>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let (dock, _skin) = DockSkin::dock_area("latex-studio-dock", Some(1), window, cx);
         let (status_handle, status_rx) = crate::status::channel();
+
+        // Primer arranque de una instalación (M3-3): el instalador ligero no crea
+        // `workspace/` ni `config/`, y sin workspace el `cwd` de `opencode serve`
+        // no existe (el chat se quedaría sin agente).
+        if let Err(error) = portable.ensure_layout() {
+            warnings.push(ConfigWarning::new(
+                "root.layout",
+                format!("no se pudo preparar workspace/ y config/: {error}"),
+            ));
+        }
 
         let project_service = ProjectService::new(&portable);
         let startup = project_service.startup_project(&settings);
@@ -444,8 +454,6 @@ impl AppRoot {
 
         let focus = cx.focus_handle();
         let palette = cx.new(|cx| CommandState::new(window, cx));
-
-        let mut warnings = warnings;
 
         // Motor LaTeX: solo comprobación de presencia (el probe real llega en M1-D1).
         let latexmk = portable.latexmk();

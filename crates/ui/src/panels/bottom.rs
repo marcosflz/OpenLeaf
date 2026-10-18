@@ -158,76 +158,93 @@ impl BottomPanel {
         h_flex()
             .id("bottom-tabs")
             .w_full()
-            .h(px(26.))
+            .min_h(px(26.))
             .flex_none()
             .items_center()
             .gap(px(2.))
             .px(px(4.))
+            .py(px(2.))
             .border_b_1()
             .border_color(cx.theme().border)
-            .children(BottomTab::ALL.into_iter().map(|tab| {
-                let selected = self.open && tab == self.tab;
-                let counter = match tab {
-                    BottomTab::Problems if errors + warnings > 0 => {
-                        Some((errors, warnings, errors > 0))
-                    }
-                    _ => None,
-                };
+            // La tira envuelve en una segunda fila cuando no cabe: el Explorador
+            // es una columna estrecha (18 % del ancho) y con icono + nombre las
+            // tres pestañas no entran — SÍMBOLOS quedaba cortada e inalcanzable.
+            .child(
                 h_flex()
-                    .id(SharedString::from(format!("bottom-tab-{}", tab.id())))
-                    .flex_none()
-                    .gap(px(4.))
+                    .id("bottom-tabs-strip")
+                    .flex_1()
+                    .min_w_0()
+                    .flex_wrap()
                     .items_center()
-                    .px(px(6.))
-                    .py(px(3.))
-                    .rounded(px(3.))
-                    .cursor_pointer()
-                    .when(selected, |this| {
-                        this.bg(cx.theme().foreground.opacity(0.08))
-                    })
-                    .hover(|style| style.bg(cx.theme().foreground.opacity(0.06)))
-                    .child(Icon::new(tab.icon()).size(px(12.)).text_color(if selected {
-                        cx.theme().foreground
-                    } else {
-                        cx.theme().muted_foreground
-                    }))
-                    .child(
-                        div()
-                            .text_size(px(11.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(if selected {
+                    .gap(px(2.))
+                    .children(BottomTab::ALL.into_iter().map(|tab| {
+                        let selected = self.open && tab == self.tab;
+                        let counter = match tab {
+                            BottomTab::Problems if errors + warnings > 0 => {
+                                Some((errors, warnings, errors > 0))
+                            }
+                            _ => None,
+                        };
+                        h_flex()
+                            .id(SharedString::from(format!("bottom-tab-{}", tab.id())))
+                            .flex_none()
+                            .max_w(px(124.))
+                            .min_w_0()
+                            .gap(px(3.))
+                            .items_center()
+                            .px(px(4.))
+                            .py(px(3.))
+                            .rounded(px(3.))
+                            .cursor_pointer()
+                            .when(selected, |this| {
+                                this.bg(cx.theme().foreground.opacity(0.08))
+                            })
+                            .hover(|style| style.bg(cx.theme().foreground.opacity(0.06)))
+                            .child(Icon::new(tab.icon()).size(px(11.)).text_color(if selected {
                                 cx.theme().foreground
                             } else {
                                 cx.theme().muted_foreground
+                            }))
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .text_size(px(11.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(if selected {
+                                        cx.theme().foreground
+                                    } else {
+                                        cx.theme().muted_foreground
+                                    })
+                                    .child(tab.label()),
+                            )
+                            .when_some(counter, |this, (errors, warnings, has_errors)| {
+                                this.child(
+                                    div()
+                                        .text_size(px(10.))
+                                        .text_color(if has_errors {
+                                            cx.theme().danger
+                                        } else {
+                                            cx.theme().warning
+                                        })
+                                        .child(if errors > 0 {
+                                            format!("{errors}")
+                                        } else {
+                                            format!("{warnings}")
+                                        }),
+                                )
                             })
-                            .child(tab.label()),
-                    )
-                    .when_some(counter, |this, (errors, warnings, has_errors)| {
-                        this.child(
-                            div()
-                                .text_size(px(10.))
-                                .text_color(if has_errors {
-                                    cx.theme().danger
+                            .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
+                                // Clic en la pestaña activa = colapsar/desplegar.
+                                if this.tab == tab && this.open {
+                                    this.toggle_open(cx);
                                 } else {
-                                    cx.theme().warning
-                                })
-                                .child(if errors > 0 {
-                                    format!("{errors}")
-                                } else {
-                                    format!("{warnings}")
-                                }),
-                        )
-                    })
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
-                        // Clic en la pestaña activa = colapsar/desplegar.
-                        if this.tab == tab && this.open {
-                            this.toggle_open(cx);
-                        } else {
-                            this.set_tab(tab, cx);
-                        }
-                    }))
-            }))
-            .child(div().flex_1())
+                                    this.set_tab(tab, cx);
+                                }
+                            }))
+                    })),
+            )
             .when(self.tab == BottomTab::Output && self.open, |this| {
                 this.child(
                     Button::new("bottom-clear-output")

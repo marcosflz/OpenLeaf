@@ -97,11 +97,18 @@ begin
   begin
     Marker := ExpandConstant('{app}\tex\bin\windows\latexmk.exe');
     if not FileExists(Marker) then
-      MsgBox('La instalación se ha completado, pero no hay un TeX Live en' + #13#10 +
-             ExpandConstant('{app}\tex') + #13#10#13#10 +
-             'Puedes copiar ahí tu carpeta "tex" (la del proyecto o de tu TeX Live' +
-             ' reducido) y LaTeX Studio la usará al arrancar. Sin ella, el editor y' +
-             ' el chat funcionan, pero no se puede compilar.',
-             mbInformation, MB_OK);
+    begin
+      // En instalación silenciosa no se interrumpe: se deja constancia en el log.
+      if WizardSilent then
+        Log('Aviso: no hay TeX Live en ' + ExpandConstant('{app}\tex') +
+            '; la app arrancará sin poder compilar.')
+      else
+        MsgBox('La instalación se ha completado, pero no hay un TeX Live en' + #13#10 +
+               ExpandConstant('{app}\tex') + #13#10#13#10 +
+               'Puedes copiar ahí tu carpeta "tex" (la del proyecto o de tu TeX Live' +
+               ' reducido) y LaTeX Studio la usará al arrancar. Sin ella, el editor y' +
+               ' el chat funcionan, pero no se puede compilar.',
+               mbInformation, MB_OK);
+    end;
   end;
 end;

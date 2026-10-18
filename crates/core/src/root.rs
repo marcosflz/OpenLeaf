@@ -150,6 +150,19 @@ impl PortableRoot {
         self.0.join("workspace")
     }
 
+    /// Prepara el layout de una instalación recién copiada: crea `<root>/workspace`
+    /// y `<root>/config` si faltan (idempotente) y devuelve la ruta del workspace.
+    ///
+    /// El instalador ligero no crea esas carpetas. Sin `workspace/` el `cwd` de
+    /// `opencode serve` no existe — y `Command::current_dir` falla, así que el
+    /// chat se quedaría sin agente en el primer arranque (M3-3).
+    pub fn ensure_layout(&self) -> std::io::Result<PathBuf> {
+        let workspace = self.default_workspace();
+        std::fs::create_dir_all(&workspace)?;
+        std::fs::create_dir_all(self.config_dir())?;
+        Ok(workspace)
+    }
+
     /// Comprueba que la raíz existe y admite escribir un archivo de prueba.
     pub fn is_writable(&self) -> bool {
         if !self.0.is_dir() {
@@ -260,6 +273,29 @@ mod tests {
         assert_eq!(root.config_dir(), PathBuf::from("C:/lsx/config"));
         assert_eq!(root.logs_dir(), PathBuf::from("C:/lsx/logs"));
         assert_eq!(root.default_workspace(), PathBuf::from("C:/lsx/workspace"));
+    }
+
+    #[test]
+    fn ensure_layout_creates_workspace_and_config_without_touching_files() {
+        let dir = temp_dir("layout");
+        let root = PortableRoot::from_dir(dir.clone());
+        assert!(
+            !root.default_workspace().is_dir(),
+            "el temporal debe empezar vacío"
+        );
+
+        let workspace = root.ensure_layout().expect("prepara el layout");
+        assert_eq!(workspace, root.default_workspace());
+        assert!(workspace.is_dir());
+        assert!(root.config_dir().is_dir());
+
+        // Idempotente y no destructivo: un proyecto ya creado sigue ahí.
+        let project = workspace.join("mio.tex");
+        std::fs::write(&project, b"hola").expect("escribir proyecto");
+        assert!(root.ensure_layout().is_ok());
+        assert!(project.is_file(), "no debe vaciar el workspace");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

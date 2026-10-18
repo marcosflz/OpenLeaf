@@ -333,7 +333,7 @@ pub struct AiSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
     /// Modelo preferido `provider/model`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default = "ai_model", skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// Agente de opencode.
     #[serde(default = "ai_agent")]
@@ -356,6 +356,17 @@ fn ai_agent() -> String {
     "build".to_owned()
 }
 
+/// Modelo por defecto del chat cuando el usuario no elige otro en Ajustes.
+///
+/// La app lo manda explícitamente en cada prompt: sin esto, opencode resuelve
+/// el modelo de su configuración global (el del usuario) y el chat dejaría de
+/// usar el que documenta el producto.
+pub const DEFAULT_AI_MODEL: &str = "opencode-go/deepseek-v4.1-flash";
+
+fn ai_model() -> Option<String> {
+    Some(DEFAULT_AI_MODEL.to_owned())
+}
+
 fn ai_permission_preset() -> String {
     "ask".to_owned()
 }
@@ -369,7 +380,7 @@ impl Default for AiSettings {
         Self {
             auto_start: true,
             port: None,
-            model: None,
+            model: ai_model(),
             agent: ai_agent(),
             permission_preset: ai_permission_preset(),
             show_reasoning: true,
@@ -848,6 +859,29 @@ mod tests {
         assert_eq!(value["ui"]["dock"], Value::from(Map::new()));
         assert_eq!(value["latex"]["autoCompile"], Value::from(true));
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// El chat arranca con el modelo documentado, incluso si el `settings.json`
+    /// del usuario es anterior y no trae `model`; si el usuario elige otro, manda
+    /// su elección.
+    #[test]
+    fn el_chat_usa_el_modelo_documentado_salvo_eleccion_explicita() {
+        let (root, dir) = temp_root("modelo");
+        write_settings(
+            &dir,
+            r#"{ "$schemaVersion": 1, "ai": { "agent": "build" } }"#,
+        );
+        let (loaded, _) = Settings::load(&root);
+        assert_eq!(loaded.ai.model.as_deref(), Some(DEFAULT_AI_MODEL));
+
+        write_settings(
+            &dir,
+            r#"{ "$schemaVersion": 1, "ai": { "model": "ollama/qwen2.5-coder:7b" } }"#,
+        );
+        let (loaded, warnings) = Settings::load(&root);
+        assert_eq!(loaded.ai.model.as_deref(), Some("ollama/qwen2.5-coder:7b"));
+        assert!(warnings.is_empty(), "avisos inesperados: {warnings:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
