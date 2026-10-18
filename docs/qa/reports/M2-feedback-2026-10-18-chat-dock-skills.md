@@ -9,9 +9,9 @@
 
 | # | Petición del usuario | Resultado |
 |---|---|---|
-| 1 | `Enter` envía y `Shift+Enter` hace salto de línea | ✅ `capture_key_down` en el contenedor del composer (antes del textarea, para que el salto no llegue a insertarse). El botón «Enviar» sigue funcionando. |
+| 1 | `Enter` envía y `Shift+Enter` hace salto de línea | ✅ `TextareaState::submit_on_enter(true)` + suscripción a `InputEvent::PressEnter { shift: false }` (ver §5: el primer intento con `capture_key_down` **no** funcionaba). El botón «Enviar» sigue funcionando. |
 | 2 | Botón de gestión de permisos para que no pregunte por cada acción | ✅ Menú **Permisos** en el header del chat con 3 presets: *Preguntar siempre* / *Aprobar ediciones del proyecto* / *Aprobar todo*. Con los automáticos el panel responde `always` a `permission.asked` sin abrir el modal y se persiste en `ai.permissionPreset`. |
-| 3 | El razonamiento debe ir en un bloque plegado | ✅ Era un **bug del reducer**: los `message.part.delta` llegan antes del primer `message.part.updated` y no traen tipo de parte, así que se materializaban como **texto normal** y al llegar el snapshot se creaba además una parte de razonamiento (texto duplicado). Ahora la parte se *promociona* conservando lo ya recibido y el bloque (que ya nacía plegado) pliega de verdad. Verificado con la fixture real (`prt_149dd8519001…` es `reasoning` y recibe deltas). |
+| 3 | El razonamiento debe ir en un bloque plegado | ✅ Dos bugs encadenados: (a) los deltas previos al snapshot se materializaban como **texto normal** y se duplicaban al llegar el snapshot (el reducer ahora los **bufferiza** y materializa con el tipo correcto); (b) [ver §5] el primer arreglo dejaba el texto visible hasta el snapshot. Ahora el bloque nace plegado y solo se ve la cabecera (`Razonamiento ▸` con spinner). |
 | 4 | Skills de LaTeX para el agente, **sin instalarlas globales** | ✅ 4 skills en `assets/skills` (`latex-compilar-depurar`, `latex-matematicas`, `latex-tablas-figuras`, `latex-beamer`). opencode 1.18.30 **no** descubre skills de proyecto (probado `.opencode/skills`, `.opencode/skill` y `.agents/skills` dentro del proyecto) pero **sí** acepta `skills.paths` en la config, así que el supervisor genera `config/opencode.runtime.json` (config del bundle + ruta absoluta al bundle). Verificado con el binario real: `debug skill` lista las cuatro. Nada se escribe en `%USERPROFILE%`. |
 | 5 | Volver atrás si el agente rompe algo (git interno / revert por mensaje) | ✅ **Revert nativo de opencode** (`POST /session/:id/revert` + `/unrevert`, que deshacen historial **y archivos**): botón ↩ en cada mensaje del usuario, confirmación explícita y banner «Cambios revertidos · Deshacer» mientras el revert esté activo. Tras aplicarlo se recarga el historial de la sesión. No se construyó un git paralelo: la API ya existe (mejor que copiar el proyecto). |
 | 6 | Unificar «Filtrar problemas» y «SALIDA» en una ventana con pestañas bajo el Explorador | ✅ `BottomPanel` con **PROBLEMAS · SALIDA · SÍMBOLOS** bajo el árbol, colapsable (chevron y botón de SALIDA del árbol), contador de errores/avisos y «vaciar SALIDA». El panel de problemas ya no cuelga del editor (que gana altura). |
@@ -48,8 +48,17 @@
 5. Dock: cambiar de pestaña, colapsar con el chevron, vaciar SALIDA y usar SÍMBOLOS para
    insertar `\alpha{}` en el cursor.
 
-## 4. Notas para el gate
+## 5. Corrección posterior (mismo día): `Enter` y el parpadeo del razonamiento
 
+El usuario probó el `.exe` de release y reportó dos fallos; ambos tenían una causa distinta de la que el primer arreglo asumía:
+
+- **`Enter` no enviaba.** Un `capture_key_down` en el contenedor del composer no puede evitar el salto de línea: los listeners de tecla no cortan la **acción** asociada a `Enter` en el textarea. La solución correcta es del propio kit:
+  `TextareaState::submit_on_enter(true)` (con `Enter` emite `InputEvent::PressEnter` sin insertar salto; con `Shift+Enter` inserta salto y emite el evento con `shift: true`) + suscripción del panel a `PressEnter { shift: false }`. Test de UI (`enter_en_el_composer_no_inserta_salto_de_linea`) que **fallaba** con el intento anterior y pasa ahora: comprueba que el composer conserva el texto sin `\n`, que el panel intenta enviar (contador en `cfg(test)`) y que `Shift+Enter` inserta el salto sin enviar. Se eliminó el `capture_key_down`.
+- **El razonamiento se veía un instante y luego se colapsaba.** El arreglo anterior (promocionar `Text` → `Reasoning`) resolvía la duplicación *después* del snapshot, pero mientras tanto el texto ya estaba pintado como mensaje. Ahora los deltas de partes desconocidas se **bufferizan** (`Conversation::pending_deltas`) y no se pinta nada hasta que el snapshot define el tipo; entonces nacen como `Part::Reasoning` (plegado). Si un delta nunca recibe snapshot, `flush_pending_deltas()` lo materializa como texto al cerrar el turno. Tests: `los_deltas_sin_snapshot_no_se_pintan_hasta_saber_el_tipo` y `un_delta_huerfano_se_materializa_al_cerrar_el_turno`.
+
+Commits: `d9260cc`. Gates: fmt/clippy/workspace verdes (lsx-chat **42** tests, lsx-ui **83**).
+
+## 6. Notas para el gate
 - La config efectiva (`config/opencode.runtime.json`) la regenera el supervisor en cada
   arranque del server; está en `.gitignore`. Si `assets/skills` no existe, se usa la config
   del bundle sin más (fallback silencioso, no rompe el arranque).

@@ -81,15 +81,15 @@
 
 | Petición | Estado |
 |---|---|
-| `Enter` envía / `Shift+Enter` salto de línea | ✅ `5a71ab5` |
+| `Enter` envía / `Shift+Enter` salto de línea | ✅ `5a71ab5` + corrección `d9260cc` (`submit_on_enter` del kit; el `capture_key_down` inicial no bastaba) |
 | Botón de gestión de permisos (no preguntar por cada acción) | ✅ menú con 3 presets (`ask` / `project` / `all`) persistidos |
-| Razonamiento en bloque plegado | ✅ era un bug del reducer (deltas sin tipo → texto duplicado); corregido |
+| Razonamiento en bloque plegado | ✅ `5a71ab5` + corrección `d9260cc`: los deltas que llegan antes del snapshot se bufferizan, así el bloque nace plegado (antes parpadeaba como texto) |
 | Skills de LaTeX **sin instalar globales** | ✅ 4 skills en `assets/skills` + `skills.paths` en `config/opencode.runtime.json` (`2697121`); verificado con `opencode debug skill` |
 | Volver atrás si el agente rompe algo | ✅ revert nativo de opencode por mensaje + «deshacer» |
 | Unificar problemas + SALIDA en pestañas bajo el Explorador | ✅ `a8b95ac` (`BottomPanel`) |
 | Pestaña de símbolos LaTeX insertables con un clic | ✅ ~90 símbolos por categorías con buscador |
 
-Gates de la ronda: fmt/clippy/workspace verdes (lsx-ui 82, lsx-chat 40); evidencia visual `shots/m2-bottom-dock.png`. Pendiente de validación manual: Enter/razonamiento, preset de permisos sin modal, revert con vuelta de archivos, carga de una skill LaTeX y uso de la paleta.
+Gates de la ronda: fmt/clippy/workspace verdes (lsx-ui 82→83, lsx-chat 40→42 tras las correcciones del 2026-10-18); evidencia visual `shots/m2-bottom-dock.png`. Pendiente de validación manual: Enter/razonamiento (revalidar tras `d9260cc`), preset de permisos sin modal, revert con vuelta de archivos, carga de una skill LaTeX y uso de la paleta.
 
 
 **Modelo del chat (petición del usuario, 2026-10-17)**: el producto usa por defecto **`opencode-go/deepseek-v4.1-flash`** (antes gpt-5.6-luna) — fijado en `agent/opencode.json` (`model`) y `config/settings.json` (`ai.model`); verificado contra `GET /config` del server real (commit `aa8573b`). Todos los tests/demos nuevos del chat usan DeepSeek.
