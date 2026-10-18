@@ -91,6 +91,14 @@
 
 Gates de la ronda: fmt/clippy/workspace verdes (lsx-ui 82→83, lsx-chat 40→42 tras las correcciones del 2026-10-18); evidencia visual `shots/m2-bottom-dock.png`. Pendiente de validación manual: Enter/razonamiento (revalidar tras `d9260cc`), preset de permisos sin modal, revert con vuelta de archivos, carga de una skill LaTeX y uso de la paleta.
 
+**Instalador compilado y probado en local (2026-10-18)**: petición del usuario («olvidémonos de la Action: generamos el `.exe` en local»). Informe: `docs/qa/reports/M3-instalador-local-2026-10-18.md`.
+
+- `dist\LaTeX-Studio-Setup.exe` — **53,8 MB**, SHA-256 `FE068434…5288C`, versión `0.1.0-20261018`, perfil **ligero** (app + agente + skills; sin `tex\` ni `workspace\`), montado con `cargo xtask dist --no-tex --no-zip --clean` y compilado con el Inno Setup del PC (`pwsh -File installer\build.ps1 -SkipBuild`).
+- Instalado **por usuario** (sin UAC) en `%LOCALAPPDATA%\LaTeX Studio` y **verificado de punta a punta**: arranca, crea `workspace\`, arranca el agente (`IA lista`), **el chat responde y lista las 4 skills portables** (`latex-beamer`, `latex-compilar-depurar`, `latex-matematicas`, `latex-tablas-figuras`) y, con `tex\` enlazado (*junction*), compila (`TeX Live` en verde + `main.pdf`).
+- **Cuatro fallos de primer arranque arreglados** (commit `3fd2b8b`): el agente no arrancaba por falta de `workspace\` (ahora `PortableRoot::ensure_layout()`); diálogo final en instalación silenciosa; pestañas del dock inferior cortadas en la columna estrecha (ahora envuelven en dos filas); y el **modelo por defecto fijado en los ajustes** (`DEFAULT_AI_MODEL`) para no heredar el de la config global de opencode.
+- **Auditoría de secretos** (árbol versionado + historial completo): limpia; el único «match» es un blob cifrado de razonamiento dentro de un fixture (`sk-` por azar en base64).
+- Gates: fmt/clippy/workspace verdes (**328 tests**). Pendiente: clic manual en **Compilar** desde la app instalada y decidir si el instalador se sigue haciendo en CI o en local.
+
 
 **Modelo del chat (petición del usuario, 2026-10-17)**: el producto usa por defecto **`opencode-go/deepseek-v4.1-flash`** (antes gpt-5.6-luna) — fijado en `agent/opencode.json` (`model`) y `config/settings.json` (`ai.model`); verificado contra `GET /config` del server real (commit `aa8573b`). Todos los tests/demos nuevos del chat usan DeepSeek.
 
