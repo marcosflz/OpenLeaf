@@ -109,6 +109,28 @@ Gate de salida: **G1** (E2E pasos 1–8 + presupuestos §6.3) — requiere tambi
 
 **Consolidación M0 (2026-10-17)**: commits por spike (`7f9059b` pdf, `d99f6bf` core, `7943980` editor, `e446491` chat, `55e0e4a` ui); `xtask chat-replay` cableado y deps alineadas (`tree-sitter 0.26` + `codebook-tree-sitter-latex 0.6.1`) en `3430d9f`; `crates/latex` (S5) sin commitear a propósito mientras el spike está en vuelo; **build release + entrega de .exe en curso**; gates completos del workspace tras el build.
 
+## 0.2 — De MVP a producto instalable (2026-10-24)
+
+**OKF creado**: `docs/kb/` (índice, esquema, notas de producto/arquitectura/operaciones/
+calidad, plan y changelog). `AGENTS.md` obliga a leerlo y mantenerlo; skill
+`lsx-knowledge-base` añadido.
+
+| Tarea | Estado | Evidencia / nota |
+|---|---|---|
+| P2-KB-1 OKF + AGENTS + skill | ✅ DONE | `docs/kb/index.md`, `docs/kb/changes/PLAN-0.2.md` |
+| P2-INST-1 Instalador con TinyTeX | ✅ DONE | `docs/qa/reports/P2-INST-1-2026-10-24.md`; instalación limpia + article/report/beamer |
+| P2-UI-1 Ajustes 2.0 | ✅ DONE | `shots/p2-settings-*.png`; 104 tests UI |
+| P2-UI-2 Temas (sistema + acento) | ✅ DONE | dark/light; chat adaptado a tokens |
+| P2-AI-1 Conexión IA/opencode | ✅ DONE | `ai_setup.rs`; live pendiente de `agent/opencode.exe` |
+| P2-AI-2 Persistir modelo/agente del chat | ✅ DONE | `ChatPanelEvent::SelectionChanged` + `validate` de permisos |
+| P2-UI-3 Ventana/menús/cierre seguro | ✅ DONE | `ui.window`, `AppMenuBar`, cierre seguro; capturas |
+| P2-INST-2 Recuperación del motor | ⏳ PLANNED | O-2 |
+| P2-UI-4 Bienvenida/pulido/retirada demo | 🟡 DOING | demo retirada; estado vacío con acciones |
+| P2-QA-1 Gate G2.5 | ⏳ PLANNED | tras O-1 |
+
+**Auditoría**: `docs/kb/quality/01-auditoria-2026-10-24.md` (42 hallazgos S1–S4).
+**Plan**: `docs/kb/changes/PLAN-0.2.md` · **Changelog**: `docs/kb/changes/CHANGELOG.md`.
+
 ## Notas
 
 - **P0.4b**: crear remoto GitHub (privado por defecto) y push para verificar CI verde. Necesita decisión del usuario.

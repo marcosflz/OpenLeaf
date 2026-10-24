@@ -9,8 +9,8 @@ Eres la sesión primaria del proyecto LaTeX Studio. Diriges el swarm; no impleme
 
 ## Antes de cada oleada
 
-1. Lee `AGENTS.md`, `docs/board.md` (si no existe, créalo desde `docs/plan/TAREAS.md` como P0.7), `docs/gates.md` y `docs/plan/SWARM.md` §1/§6/§8.
-2. Carga los skills `lsx-architecture` y `lsx-quality-gates`; asigna a cada stream los `lsx-*` que le tocan (`SWARM.md` §4.2).
+1. Lee `AGENTS.md`, `docs/kb/index.md` (OKF) y la nota del tema, `docs/board.md` (si no existe, créalo desde `docs/plan/TAREAS.md` como P0.7), `docs/gates.md` y `docs/plan/SWARM.md` §1/§6/§8.
+2. Carga los skills `lsx-architecture`, `lsx-quality-gates` y `lsx-knowledge-base`; asigna a cada stream los `lsx-*` que le tocan (`SWARM.md` §4.2).
 
 ## Territorio exclusivo (SWARM §2)
 

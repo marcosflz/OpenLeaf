@@ -3,8 +3,10 @@
 IDE LaTeX nativo (Rust + GPUI) y **portable**: 4 paneles — archivos · editor · PDF · chat IA —
 con compilación al guardar, SyncTeX bidireccional y auto-reparación por agente.
 
-- **Estado**: P0 (preflight) — ver `docs/board.md`.
+- **Estado**: 0.2 en curso (pulido de producto) — ver `docs/board.md`.
+- **OKF / wiki del proyecto**: `docs/kb/index.md` (punto de entrada para personas y agentes).
 - **Plan de ejecución del swarm**: `docs/plan/` (README → PLAN-MAESTRO → INTERFACES → TAREAS → SWARM).
+- **Plan incremental 0.2**: `docs/kb/changes/PLAN-0.2.md` · **changelog**: `docs/kb/changes/CHANGELOG.md`.
 - **Gates y riesgos vivos**: `docs/gates.md`.
 
 ## Desarrollo
