@@ -21,15 +21,18 @@ verified: true
 
 - **Fecha:** 2026-10-24
 - **Tarea:** release 0.2.0
-- **Estado:** doing
+- **Estado:** done
 - **Territorio:** `Makefile`, `scripts/get-opencode.ps1`, `Cargo.toml`, `installer/latex-studio.iss`,
   `docs/release.md`, `docs/release-notes.md`
 - **Qué cambia:** atajos `make agent/build/dist/installer/release/gates/publish`; descarga
   reproducible de opencode v1.18.30; versión 0.2.0 y notas de release.
 - **Por qué:** el usuario quiere generar y publicar el instalador en local sin recordar
   la secuencia de comandos.
-- **Evidencia:** `make release` genera `dist\LaTeX-Studio-Setup.exe` + SHA-256; release
-  publicada en GitHub.
+- **Evidencia:** `make release` generó `dist\LaTeX-Studio-Setup.exe` (54,1 MB) y su SHA-256;
+  release `v0.2.0` publicada en
+  `https://github.com/marcosflz/OpenLeaf/releases/tag/v0.2.0`; hash del asset descargado
+  idéntico al local. Instalación limpia real verificada con TinyTeX, agente 1.18.30 y app
+  release arrancando (`shots/release-0.2.0.png`).
 
 ## CHG-0011 — Informe del gate G2.5
 

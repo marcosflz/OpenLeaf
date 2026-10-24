@@ -131,6 +131,18 @@ calidad, plan y changelog). `AGENTS.md` obliga a leerlo y mantenerlo; skill
 **Auditoría**: `docs/kb/quality/01-auditoria-2026-10-24.md` (42 hallazgos S1–S4).
 **Plan**: `docs/kb/changes/PLAN-0.2.md` · **Changelog**: `docs/kb/changes/CHANGELOG.md`.
 
+### Release 0.2.0 publicada (2026-10-24)
+
+- Asset: `LaTeX-Studio-Setup.exe` (56.691.674 bytes ≈ 54,1 MB), SHA-256
+  `4dd54a73ccfdfd7fce63bbc3236a42b4089541b21dc7895fae072a84eedfdc1b`.
+- URL: `https://github.com/marcosflz/OpenLeaf/releases/tag/v0.2.0`.
+- Verificado: descarga del asset con hash idéntico; instalación limpia silenciosa en ruta con
+  espacios; `latex-studio.exe` release arranca, `agent/opencode.exe` 1.18.30, skills
+  presentes, TinyTeX 2026.10 con `latexmk/synctex/biber` (`status: ok`), toolbar
+  `TeX Live 4.88` e `IA lista` con `deepseek-v4.1-flash`.
+- Atajos: `make release` (local) y `make publish` (GitHub). El tag `v0.2.0` también dispara
+  el workflow `installer` de CI.
+
 ## Notas
 
 - **P0.4b**: crear remoto GitHub (privado por defecto) y push para verificar CI verde. Necesita decisión del usuario.
