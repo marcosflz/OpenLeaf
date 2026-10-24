@@ -3,6 +3,18 @@
 Resumen de las dos rutas: **CI** (recomendada para el instalador ligero) y **local**
 (para el zip `full` con TeX Live, que no puede ir a CI porque esos activos no están en git).
 
+## Atajos con `make` (Windows)
+
+```powershell
+make agent        # descarga agent/opencode.exe v1.18.30 si falta
+make release      # build release + dist + Setup.exe + SHA-256
+make publish      # crea la release v0.2.0 en GitHub (gh autenticado)
+make gates        # fmt + clippy + tests + OKF
+```
+
+`make release` deja `dist\LaTeX-Studio-Setup.exe` y su `.sha256`. El perfil es ligero:
+TinyTeX se descarga al instalar; no hace falta `tex\` en la máquina que compila.
+
 ## Qué entra y qué no
 
 | Pieza | ¿En git? | ¿En el instalador ligero? | Notas |

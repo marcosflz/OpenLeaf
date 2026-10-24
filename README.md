@@ -16,6 +16,8 @@ cargo run -p latex-studio        # abre la ventana (requiere toolchain stable >=
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo nextest run --workspace    # o cargo test --workspace
+make release                     # instalador local en dist\LaTeX-Studio-Setup.exe
+make gates                       # fmt + clippy + tests + OKF
 ```
 
 La raíz portable se detecta por: `LATEX_STUDIO_ROOT` → directorio del exe → raíz del repo (dev).

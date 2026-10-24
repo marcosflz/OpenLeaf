@@ -17,6 +17,16 @@ verified: true
 
 ## Ruta rápida (instalador ligero en local)
 
+Con `Makefile`:
+
+```powershell
+make agent     # descarga agent/opencode.exe v1.18.30 si falta
+make release   # build release + dist + Setup.exe + SHA-256
+make publish   # release v0.2.0 en GitHub
+```
+
+Equivalente manual:
+
 ```powershell
 cargo build --release -p latex-studio
 cargo xtask dist --no-tex --no-zip --clean
@@ -24,6 +34,8 @@ pwsh installer\build.ps1 -SkipBuild
 (Get-FileHash dist\LaTeX-Studio-Setup.exe -Algorithm SHA256).Hash.ToLower() |
   Set-Content dist\LaTeX-Studio-Setup.exe.sha256
 ```
+
+Notas de release: `docs/release-notes.md`.
 
 Publicar con `gh`:
 

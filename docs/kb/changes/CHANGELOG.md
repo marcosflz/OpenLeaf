@@ -17,6 +17,20 @@ verified: true
 > Formato: `CHG-NNNN`. Estado: `planned` · `doing` · `done` · `reverted`.
 > El estado vivo de las tareas está en `PLAN-0.2.md`; aquí queda la historia.
 
+## CHG-0012 — Makefile y release local 0.2.0
+
+- **Fecha:** 2026-10-24
+- **Tarea:** release 0.2.0
+- **Estado:** doing
+- **Territorio:** `Makefile`, `scripts/get-opencode.ps1`, `Cargo.toml`, `installer/latex-studio.iss`,
+  `docs/release.md`, `docs/release-notes.md`
+- **Qué cambia:** atajos `make agent/build/dist/installer/release/gates/publish`; descarga
+  reproducible de opencode v1.18.30; versión 0.2.0 y notas de release.
+- **Por qué:** el usuario quiere generar y publicar el instalador en local sin recordar
+  la secuencia de comandos.
+- **Evidencia:** `make release` genera `dist\LaTeX-Studio-Setup.exe` + SHA-256; release
+  publicada en GitHub.
+
 ## CHG-0011 — Informe del gate G2.5
 
 - **Fecha:** 2026-10-24
