@@ -21,6 +21,7 @@
 //! El módulo [`spike`] conserva la demo M0-S1 (`cargo run -p latex-studio
 //! --bin spike-shell`), que sigue siendo la referencia del dock del kit.
 
+pub mod ai_setup;
 pub mod app;
 pub mod layout;
 pub mod new_project;

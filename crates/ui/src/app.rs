@@ -16,7 +16,7 @@
 //! - **M1-A2**: toolbar y status bar con estado por canal
 //!   ([`crate::status::StatusMessage`]).
 //! - **M1-A4**: notificaciones y modal de permiso
-//!   ([`crate::permission::PermissionCard`], botón demo).
+//!   (el modal de permiso vive en el panel de chat).
 //! - **M1-A5**: command palette (kit `command`) y ajustes mínimos.
 //!
 //! Los paneles no conocen este tipo: emiten [`PaneEvent`]s y el shell decide.
@@ -29,20 +29,23 @@ use std::time::{Duration, Instant};
 use camino::{Utf8Path, Utf8PathBuf};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
-    ActiveTheme as _, Selectable as _, Sizable as _, TitleBar, WindowExt as _,
+    ActiveTheme as _, GlobalState, Selectable as _, Sizable as _, TitleBar, WindowExt as _,
     button::{Button, ButtonVariants as _, DropdownButton},
     command::{Command, CommandState},
-    dialog::DialogDescription,
+    dialog::{DialogClose, DialogDescription, DialogFooter},
     dock::{DockArea, DockEvent, DockLayout, DockPlacement, DockSkin, PanelInfo, panel_handle},
-    h_flex, v_flex,
+    h_flex,
+    menu::AppMenuBar,
+    v_flex,
 };
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
-    ParentElement as _, Pixels, Render, SharedString, Styled as _, Subscription, Task, WeakEntity,
-    Window, div, px,
+    App, AppContext as _, Bounds, Context, Entity, FocusHandle, InteractiveElement as _,
+    IntoElement, Menu, MenuItem, ParentElement as _, Pixels, Render, SharedString, Styled as _,
+    Subscription, Task, WeakEntity, Window, WindowBounds, div, point, px, size,
 };
-use lsx_core::config::{ConfigWarning, Settings};
+use lsx_core::config::{ConfigWarning, Settings, WindowSettings};
 use lsx_core::root::PortableRoot;
+use lsx_editor::document::AutosaveConfig;
 use lsx_latex::{
     CompileController, CompileEvent, CompileStatus, Diagnostic, LatexEngine, LatexSettings,
     TexLiveEngine, detect_main,
@@ -54,12 +57,11 @@ use crate::palette::PaletteCommand;
 use crate::panels::bottom::BottomPanel;
 use crate::panels::chat::{ChatPanel, ChatPanelConfig, ChatPanelEvent};
 use crate::panels::editor::{EditorPanel, EditorPanelConfig, EditorPanelEvent};
-use crate::panels::pdf::{PdfPanel, PdfPanelEvent, SyncRect};
+use crate::panels::pdf::{PdfPanel, PdfPanelEvent, SyncRect, ZoomMode};
 use crate::panels::problems::{ProblemsEvent, ProblemsPanel};
 use crate::panels::symbols::SymbolsPanel;
 use crate::panels::tree::{TreeFsEvent, TreeOpenKind, TreePanelEvent};
 use crate::panels::{Pane, PaneEvent, PaneState, TreePanel, pane_container};
-use crate::permission::{PermissionCard, PermissionRequest};
 use crate::project::ProjectService;
 use crate::settings_ui;
 use crate::status::{AiState, StatusHandle, StatusMessage, StatusModel};
@@ -67,6 +69,8 @@ use crate::{status_bar, theme, toolbar};
 
 /// Debounce del guardado del layout (ms) tras `DockEvent::LayoutChanged`.
 const LAYOUT_SAVE_DEBOUNCE: Duration = Duration::from_millis(450);
+/// Debounce del guardado de la geometría de la ventana (ms).
+const WINDOW_STATE_SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
 /// Quietud del cursor/scroll antes de lanzar un SyncTeX del scroll sync (ms).
 const SYNC_DEBOUNCE: Duration = Duration::from_millis(250);
 /// Ventana en la que se ignoran los avisos de scroll del PDF tras un scroll
@@ -87,7 +91,16 @@ gpui_kit::actions!(
         ToggleFocusMode,
         SyncForward,
         OpenPalette,
-        OpenSettingsPane
+        OpenSettingsPane,
+        ToggleEditorPane,
+        CompileProject,
+        SaveDocument,
+        NewProject,
+        OpenProject,
+        ResetLayout,
+        ShowShortcuts,
+        ShowAbout,
+        QuitApp
     ]
 );
 
@@ -125,13 +138,19 @@ pub fn register_keybindings(cx: &mut App) {
     use gpui_kit::KeyBinding;
     cx.bind_keys([
         KeyBinding::new("ctrl-alt-1", ToggleTreePane, None),
+        KeyBinding::new("ctrl-alt-2", ToggleEditorPane, None),
         KeyBinding::new("ctrl-alt-3", TogglePdfPane, None),
         KeyBinding::new("ctrl-alt-v", TogglePdfPane, None),
         KeyBinding::new("ctrl-alt-4", ToggleChatPane, None),
         KeyBinding::new("ctrl-alt-m", ToggleFocusMode, None),
         KeyBinding::new("ctrl-alt-j", SyncForward, None),
         KeyBinding::new("ctrl-p", OpenPalette, None),
+        KeyBinding::new("ctrl-shift-p", OpenPalette, None),
         KeyBinding::new("ctrl-,", OpenSettingsPane, None),
+        KeyBinding::new("ctrl-s", SaveDocument, None),
+        KeyBinding::new("ctrl-b", CompileProject, None),
+        KeyBinding::new("f1", ShowShortcuts, None),
+        KeyBinding::new("ctrl-q", QuitApp, None),
     ]);
 }
 
@@ -173,13 +192,21 @@ pub struct AppRoot {
     pending_inverse: InverseReason,
     focus: FocusHandle,
     palette: Entity<CommandState>,
+    menu_bar: Entity<AppMenuBar>,
+    /// Al menos un documento del editor tiene cambios sin guardar.
+    editor_dirty: bool,
+    /// Cierre confirmado por el usuario: `on_window_should_close` deja pasar.
+    force_close: bool,
     layout_generation: u64,
     layout_dirty: bool,
+    window_state_generation: u64,
+    window_state_dirty: bool,
     _status_task: Task<()>,
     _compile_task: Task<()>,
     _dock_events: Subscription,
     _pane_events: Vec<Subscription>,
     _integration_events: Vec<Subscription>,
+    _window_events: Vec<Subscription>,
 }
 
 impl AppRoot {
@@ -226,7 +253,13 @@ impl AppRoot {
             EditorPanel::with_config(
                 editor_root,
                 portable.config_dir(),
-                EditorPanelConfig::default(),
+                EditorPanelConfig {
+                    autosave: AutosaveConfig {
+                        enabled: settings.editor.autosave.enabled,
+                        interval_secs: u64::from(settings.editor.autosave.interval_secs),
+                    },
+                    ..EditorPanelConfig::default()
+                },
                 window,
                 cx,
             )
@@ -241,8 +274,13 @@ impl AppRoot {
         // `synctex.exe` de la distro portable: lo usan el salto inverso
         // (Ctrl+clic) y el scroll sync inverso (M1-C5). El shell reacciona a
         // `PdfPanelEvent::InverseJump` para decidir salto vs scroll.
-        pdf_panel.update(cx, |panel, _cx| {
+        pdf_panel.update(cx, |panel, cx| {
             panel.set_synctex_exe(portable.synctex_exe());
+            let mode = ZoomMode::from_setting(&settings.pdf.zoom_mode);
+            panel.set_zoom_mode(mode, cx);
+            if mode == ZoomMode::Manual {
+                panel.set_zoom(settings.pdf.zoom, cx);
+            }
         });
         let pdf = cx.new(|cx| PdfSlot::new(pdf_panel.clone(), Some(dock.downgrade()), cx));
         // Chat real (M1-E3..E6): el panel arranca el supervisor si `ai.autoStart`
@@ -398,8 +436,8 @@ impl AppRoot {
             cx.subscribe_in(
                 &chat_events,
                 window,
-                |this, _panel, event: &ChatPanelEvent, _window, cx| {
-                    this.on_chat_event(event, cx);
+                |this, _panel, event: &ChatPanelEvent, window, cx| {
+                    this.on_chat_event(event, window, cx);
                 },
             ),
             cx.subscribe_in(
@@ -482,6 +520,12 @@ impl AppRoot {
             }
         };
 
+        // Barra de menús de escritorio (Archivo/Ver/Herramientas/Ayuda). Los
+        // items despachan acciones que el `render` de la raíz escucha.
+        let menus = app_menus(&layout);
+        GlobalState::global_mut(cx).set_app_menus(menus.into_iter().map(Menu::owned).collect());
+        let menu_bar = AppMenuBar::new(cx);
+
         let mut root = Self {
             portable,
             settings,
@@ -512,16 +556,65 @@ impl AppRoot {
             pending_inverse: InverseReason::default(),
             focus,
             palette,
+            menu_bar,
+            editor_dirty: false,
+            force_close: false,
             layout_generation: 0,
             layout_dirty: false,
+            window_state_generation: 0,
+            window_state_dirty: false,
             _status_task: status_task,
             _compile_task: compile_task,
             _dock_events: dock_events,
             _pane_events: pane_events,
             _integration_events: integration_events,
+            _window_events: Vec::new(),
         };
         let layout = root.layout.clone();
         root.apply_layout(&layout, window, cx);
+        root.sync_app_menus(cx);
+
+        // Persistencia de geometría + cierre seguro con documentos sucios.
+        root._window_events
+            .push(cx.observe_window_bounds(window, |root, window, cx| {
+                root.on_window_bounds_changed(window, cx);
+            }));
+        // Hook de QA/visual: abre Ajustes al arrancar sin depender de clics
+        // sintéticos. No se usa en producción salvo que se exporte la variable.
+        if let Some(open) = std::env::var_os("LSX_QA_OPEN_SETTINGS") {
+            let ai = open.to_string_lossy() == "ai";
+            let weak = cx.weak_entity();
+            window.defer(cx, move |window, cx| {
+                let _ = weak.update(cx, |root, cx| {
+                    if ai {
+                        root.open_ai_settings(window, cx);
+                    } else {
+                        root.open_settings(window, cx);
+                    }
+                });
+            });
+        }
+
+        let weak = cx.weak_entity();
+        window.on_window_should_close(cx, move |window, cx| {
+            let force = weak
+                .read_with(cx, |root, _| root.force_close)
+                .unwrap_or(true);
+            if force {
+                return true;
+            }
+            let dirty = weak
+                .read_with(cx, |root, cx| root.editor_panel.read(cx).dirty_count())
+                .unwrap_or(0);
+            if dirty == 0 {
+                return true;
+            }
+            let _ = weak.update(cx, |root, cx| {
+                root.persist_window_state(cx);
+                root.open_close_dialog(dirty, window, cx);
+            });
+            false
+        });
 
         // Preload del proyecto: si hay un main.tex detectado (con PDF hermano),
         // se abre en el editor y su PDF se carga en el visor.
@@ -646,6 +739,7 @@ impl AppRoot {
                 .update(cx, |dock, cx| dock.set_split_sizes(node, sizes, window, cx));
         }
         self.dock.update(cx, |_, cx| cx.notify());
+        self.sync_app_menus(cx);
         cx.notify();
     }
 
@@ -758,6 +852,187 @@ impl AppRoot {
                 tracing::warn!(target: "lsx::ui", error = %err, "no se pudo guardar el layout");
             }
         }
+    }
+
+    // --- ventana ------------------------------------------------------------
+
+    /// Reconstruye los menús con el estado actual (checks de paneles) y pide a
+    /// la barra que se recargue.
+    fn sync_app_menus(&self, cx: &mut Context<Self>) {
+        let menus = app_menus(&self.layout);
+        GlobalState::global_mut(cx).set_app_menus(menus.into_iter().map(Menu::owned).collect());
+        self.menu_bar.update(cx, |bar, cx| bar.reload(cx));
+    }
+
+    fn on_window_bounds_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if window.is_fullscreen() {
+            return;
+        }
+        let maximized = window.is_maximized();
+        let bounds = window.window_bounds().get_bounds();
+        let width = bounds.size.width.as_f32();
+        let height = bounds.size.height.as_f32();
+        if !width.is_finite() || !height.is_finite() || width < 640.0 || height < 480.0 {
+            return;
+        }
+        self.settings.ui.window = WindowSettings {
+            x: Some(bounds.origin.x.as_f32()),
+            y: Some(bounds.origin.y.as_f32()),
+            width,
+            height,
+            maximized,
+            extra: Default::default(),
+        };
+        self.schedule_window_state_save(cx);
+    }
+
+    fn schedule_window_state_save(&mut self, cx: &mut Context<Self>) {
+        self.window_state_dirty = true;
+        self.window_state_generation = self.window_state_generation.wrapping_add(1);
+        let generation = self.window_state_generation;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(WINDOW_STATE_SAVE_DEBOUNCE)
+                .await;
+            this.update(cx, |root, cx| {
+                if root.window_state_dirty && root.window_state_generation == generation {
+                    root.persist_window_state(cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn persist_window_state(&mut self, cx: &mut Context<Self>) {
+        self.window_state_dirty = false;
+        if let Err(err) = self.settings.save(&self.portable) {
+            tracing::warn!(target: "lsx::ui", error = %err, "no se pudo guardar la ventana");
+        }
+        let _ = cx;
+    }
+
+    /// Diálogo de cierre con documentos sin guardar.
+    fn open_close_dialog(&mut self, dirty: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let weak = cx.weak_entity();
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let weak_discard = weak.clone();
+            let weak_save = weak.clone();
+            dialog
+                .title("Cerrar LaTeX Studio")
+                .width(px(540.))
+                .child(DialogDescription::new().child(format!(
+                    "Hay {dirty} documento(s) con cambios sin guardar. \
+                     Si cierras sin guardar, esos cambios se pierden."
+                )))
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            DialogClose::new().child(
+                                Button::new("close-window-cancel")
+                                    .label("Cancelar")
+                                    .outline(),
+                            ),
+                        )
+                        .child(
+                            Button::new("close-window-discard")
+                                .label("Descartar y cerrar")
+                                .danger()
+                                .on_click(move |_, window, cx| {
+                                    let _ = weak_discard.update(cx, |root, cx| {
+                                        root.force_close = true;
+                                        root.persist_window_state(cx);
+                                        window.close_dialog(cx);
+                                        window.remove_window();
+                                    });
+                                }),
+                        )
+                        .child(
+                            Button::new("close-window-save")
+                                .label("Guardar y cerrar")
+                                .primary()
+                                .on_click(move |_, window, cx| {
+                                    let saved = weak_save
+                                        .update(cx, |root, cx| {
+                                            let saved = root
+                                                .editor_panel
+                                                .update(cx, |panel, cx| panel.save_all(cx));
+                                            if saved {
+                                                root.force_close = true;
+                                                root.persist_window_state(cx);
+                                            }
+                                            saved
+                                        })
+                                        .unwrap_or(false);
+                                    if saved {
+                                        window.close_dialog(cx);
+                                        window.remove_window();
+                                    } else {
+                                        notifications::error(
+                                            "No se pudieron guardar todos los documentos.",
+                                            window,
+                                            cx,
+                                        );
+                                    }
+                                }),
+                        ),
+                )
+        });
+    }
+
+    /// Restablece el layout de cuatro columnas y lo persiste.
+    fn reset_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let layout = ShellLayout::four_columns();
+        self.apply_layout(&layout, window, cx);
+        self.sync_app_menus(cx);
+        self.schedule_layout_save(cx);
+        notifications::success("Layout restablecido.", window, cx);
+    }
+
+    fn open_shortcuts(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        window.open_dialog(cx, |dialog, _window, _cx| {
+            let rows = [
+                ("Compilar", "Ctrl+B / botón Compilar"),
+                ("Guardar", "Ctrl+S"),
+                ("Buscar", "Ctrl+F"),
+                ("Reemplazar", "Ctrl+H"),
+                ("Paleta de comandos", "Ctrl+P / Ctrl+Shift+P"),
+                ("Ajustes", "Ctrl+,"),
+                ("Mostrar/ocultar paneles", "Ctrl+Alt+1..4"),
+                ("Modo focus", "Ctrl+Alt+M"),
+                ("SyncTeX forward", "Ctrl+Alt+J"),
+                ("Ayuda", "F1"),
+            ];
+            dialog
+                .title("Atajos de teclado")
+                .width(px(560.))
+                .child(v_flex().gap_1().children(rows.map(|(action, keys)| {
+                    h_flex()
+                        .justify_between()
+                        .gap_4()
+                        .child(div().text_sm().child(action))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(_cx.theme().muted_foreground)
+                                .child(keys),
+                        )
+                })))
+        });
+    }
+
+    fn open_about(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        window.open_dialog(cx, |dialog, _window, _cx| {
+            dialog
+                .title("Acerca de LaTeX Studio")
+                .width(px(520.))
+                .child(DialogDescription::new().child(format!(
+                    "LaTeX Studio {} — IDE LaTeX nativo y portable.\n\
+                     Editor, PDF con SyncTeX y chat IA sobre opencode.\n\n\
+                     Repositorio: github.com/marcosflz/OpenLeaf",
+                    env!("CARGO_PKG_VERSION")
+                )))
+        });
     }
 
     // --- proyecto -----------------------------------------------------------
@@ -977,7 +1252,7 @@ impl AppRoot {
     fn on_editor_event(
         &mut self,
         event: &EditorPanelEvent,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match event {
@@ -997,13 +1272,23 @@ impl AppRoot {
                 });
                 self.schedule_sync_forward(cx);
             }
+            EditorPanelEvent::DirtyChanged { dirty } => {
+                self.editor_dirty = *dirty;
+            }
+            EditorPanelEvent::NewProjectRequested => self.open_new_project_dialog(window, cx),
+            EditorPanelEvent::OpenProjectRequested => self.open_project_dialog(window, cx),
             _ => {}
         }
         cx.notify();
     }
 
     /// Eventos del panel de chat (persistencia de ajustes que toca el usuario).
-    fn on_chat_event(&mut self, event: &ChatPanelEvent, cx: &mut Context<Self>) {
+    fn on_chat_event(
+        &mut self,
+        event: &ChatPanelEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         match event {
             ChatPanelEvent::PermissionPresetChanged(preset) => {
                 self.settings.ai.permission_preset = preset.clone();
@@ -1021,6 +1306,20 @@ impl AppRoot {
                 }
                 cx.notify();
             }
+            ChatPanelEvent::SelectionChanged { model, agent } => {
+                if model.is_some() {
+                    self.settings.ai.model = model.clone();
+                }
+                self.settings.ai.agent = agent.clone();
+                if let Err(err) = self.settings.save(&self.portable) {
+                    tracing::warn!(
+                        target: "lsx::ui",
+                        error = %err,
+                        "no se pudo guardar ai.model/ai.agent"
+                    );
+                }
+            }
+            ChatPanelEvent::OpenAiSettings => self.open_ai_settings(window, cx),
         }
     }
 
@@ -1306,7 +1605,6 @@ impl AppRoot {
             }
             PaletteCommand::OpenProject => self.open_project_dialog(window, cx),
             PaletteCommand::NewProject => self.open_new_project_dialog(window, cx),
-            PaletteCommand::PermissionDemo => self.demo_permission(window, cx),
         }
     }
 
@@ -1315,6 +1613,13 @@ impl AppRoot {
         let settings = self.settings.clone();
         let weak = cx.weak_entity();
         settings_ui::open_dialog(window, cx, settings, weak);
+    }
+
+    /// Abre Ajustes en la sección IA (CTA del chat).
+    fn open_ai_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let settings = self.settings.clone();
+        let weak = cx.weak_entity();
+        settings_ui::open_ai_dialog(window, cx, settings, weak);
     }
 
     /// Aplica ajustes guardados desde el diálogo (validados de nuevo aquí).
@@ -1328,7 +1633,27 @@ impl AppRoot {
         self.settings = settings;
         // El diálogo de ajustes también puede cambiar `latex.syncScroll`.
         self.sync_scroll = self.settings.latex.sync_scroll;
+        self.latex_settings = bridge_latex_settings(&self.settings.latex);
+        if let Some(controller) = &self.compile {
+            controller.apply_settings(&self.latex_settings);
+        }
         theme::apply(&self.settings, cx);
+
+        // Autosave y zoom del PDF se aplican en caliente.
+        let autosave = AutosaveConfig {
+            enabled: self.settings.editor.autosave.enabled,
+            interval_secs: u64::from(self.settings.editor.autosave.interval_secs),
+        };
+        self.editor_panel
+            .update(cx, |panel, cx| panel.set_autosave(autosave, cx));
+        let zoom_mode = ZoomMode::from_setting(&self.settings.pdf.zoom_mode);
+        self.pdf_panel.update(cx, |panel, cx| {
+            panel.set_zoom_mode(zoom_mode, cx);
+            if zoom_mode == ZoomMode::Manual {
+                panel.set_zoom(self.settings.pdf.zoom, cx);
+            }
+        });
+
         match self.settings.save(&self.portable) {
             Ok(()) => notifications::success(
                 rust_i18n::t!("ui.app.settings.saved").to_string(),
@@ -1344,22 +1669,6 @@ impl AppRoot {
         cx.notify();
     }
 
-    /// Muestra el modal de permiso de la IA con datos de demo (M1-A4).
-    pub fn demo_permission(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let receiver = PermissionCard::show(window, cx, PermissionRequest::demo());
-        cx.spawn(async move |this, cx| {
-            if let Ok(decision) = receiver.recv().await {
-                let message =
-                    rust_i18n::t!("ui.app.permission.result", decision = decision.label())
-                        .to_string();
-                let _ = this.update_in(cx, |_root, window, cx| {
-                    notifications::info(message, window, cx);
-                });
-            }
-        })
-        .detach();
-    }
-
     // --- render ---------------------------------------------------------------
 
     fn render_title_bar(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1368,6 +1677,11 @@ impl AppRoot {
             .project
             .clone()
             .unwrap_or_else(|| rust_i18n::t!("ui.app.status.no_project").to_string());
+        let project = if self.editor_dirty {
+            format!("• {project}")
+        } else {
+            project
+        };
         TitleBar::new().child(
             h_flex()
                 .flex_1()
@@ -1517,14 +1831,6 @@ impl AppRoot {
                 rust_i18n::t!("ui.app.toolbar.palette").to_string(),
                 false,
                 cx.listener(|this, _, window, cx| this.open_palette(window, cx)),
-            ))
-            .child(toolbar::icon_button(
-                cx,
-                "toolbar-permission-demo",
-                IconName::ShieldCheck,
-                rust_i18n::t!("ui.app.toolbar.permission_demo").to_string(),
-                false,
-                cx.listener(|this, _, window, cx| this.demo_permission(window, cx)),
             ))
     }
 }
@@ -1811,6 +2117,73 @@ impl Render for EditorSlot {
     }
 }
 
+/// Calcula los bounds iniciales de la ventana a partir de `ui.window`.
+///
+/// Si la posición guardada ya no cae en ningún monitor visible (por ejemplo,
+/// se desconectó la pantalla externa), la ventana se centra. `maximized`
+/// conserva el tamaño de restaurar.
+pub fn initial_window_bounds(state: &WindowSettings, cx: &App) -> WindowBounds {
+    let width = state.width.clamp(640.0, 16_384.0);
+    let height = state.height.clamp(480.0, 16_384.0);
+    let size = size(px(width), px(height));
+    let restore = match (state.x, state.y) {
+        (Some(x), Some(y)) if x.is_finite() && y.is_finite() => {
+            Bounds::new(point(px(x), px(y)), size)
+        }
+        _ => Bounds::centered(None, size, cx),
+    };
+    let on_screen = cx
+        .displays()
+        .iter()
+        .any(|display| display.visible_bounds().contains(&restore.center()));
+    let restore = if on_screen {
+        restore
+    } else {
+        Bounds::centered(None, restore.size, cx)
+    };
+    if state.maximized {
+        WindowBounds::Maximized(restore)
+    } else {
+        WindowBounds::Windowed(restore)
+    }
+}
+
+/// Menús de la barra superior. El estado de los checks se recalcula con
+/// [`AppRoot::sync_app_menus`] cuando cambia el layout.
+fn app_menus(layout: &ShellLayout) -> Vec<Menu> {
+    let checked = |kind: SlotKind| !layout.is_collapsed(kind);
+    vec![
+        Menu::new("Archivo").items([
+            MenuItem::action("Nuevo proyecto…", NewProject),
+            MenuItem::action("Abrir carpeta…", OpenProject),
+            MenuItem::separator(),
+            MenuItem::action("Guardar", SaveDocument),
+            MenuItem::separator(),
+            MenuItem::action("Salir", QuitApp),
+        ]),
+        Menu::new("Ver").items([
+            MenuItem::action("Explorador", ToggleTreePane).checked(checked(SlotKind::Tree)),
+            MenuItem::action("Editor", ToggleEditorPane).checked(checked(SlotKind::Editor)),
+            MenuItem::action("PDF", TogglePdfPane).checked(checked(SlotKind::Pdf)),
+            MenuItem::action("Chat IA", ToggleChatPane).checked(checked(SlotKind::Chat)),
+            MenuItem::separator(),
+            MenuItem::action("Modo focus", ToggleFocusMode).checked(layout.focus.is_some()),
+            MenuItem::action("Restablecer layout", ResetLayout),
+        ]),
+        Menu::new("Herramientas").items([
+            MenuItem::action("Compilar", CompileProject),
+            MenuItem::action("Ir a la línea del PDF (SyncTeX)", SyncForward),
+            MenuItem::separator(),
+            MenuItem::action("Ajustes…", OpenSettingsPane),
+            MenuItem::action("Paleta de comandos…", OpenPalette),
+        ]),
+        Menu::new("Ayuda").items([
+            MenuItem::action("Atajos de teclado", ShowShortcuts),
+            MenuItem::action("Acerca de LaTeX Studio", ShowAbout),
+        ]),
+    ]
+}
+
 /// Convierte la sección `latex` de `settings.json` (lsx-core) al tipo del motor.
 fn bridge_latex_settings(section: &lsx_core::config::LatexSettings) -> LatexSettings {
     serde_json::to_value(section)
@@ -1905,6 +2278,19 @@ pub fn exit_focus(layout: &mut ShellLayout) -> bool {
 
 impl Render for AppRoot {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let project = self
+            .status_model
+            .project
+            .clone()
+            .unwrap_or_else(|| "LaTeX Studio".to_owned());
+        let title = if self.editor_dirty {
+            format!("• {project} — LaTeX Studio")
+        } else {
+            format!("{project} — LaTeX Studio")
+        };
+        window.set_window_title(&title);
+        window.set_window_edited(self.editor_dirty);
+
         div()
             .flex()
             .flex_col()
@@ -1926,6 +2312,9 @@ impl Render for AppRoot {
             .on_action(cx.listener(|this, _: &ToggleChatPane, window, cx| {
                 this.toggle_slot(SlotKind::Chat, window, cx)
             }))
+            .on_action(cx.listener(|this, _: &ToggleEditorPane, window, cx| {
+                this.toggle_slot(SlotKind::Editor, window, cx)
+            }))
             .on_action(cx.listener(|this, _: &ToggleFocusMode, window, cx| {
                 this.toggle_focus_mode(window, cx)
             }))
@@ -1937,7 +2326,44 @@ impl Render for AppRoot {
                     this.open_settings(window, cx)
                 }),
             )
+            .on_action(
+                cx.listener(|this, _: &CompileProject, window, cx| {
+                    this.request_compile(window, cx)
+                }),
+            )
+            .on_action(cx.listener(|this, _: &SaveDocument, window, cx| {
+                this.editor_panel
+                    .update(cx, |panel, cx| panel.save_active(window, cx));
+            }))
+            .on_action(cx.listener(|this, _: &NewProject, window, cx| {
+                this.open_new_project_dialog(window, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &OpenProject, window, cx| {
+                    this.open_project_dialog(window, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &ResetLayout, window, cx| this.reset_layout(window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &ShowShortcuts, window, cx| this.open_shortcuts(window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &ShowAbout, window, cx| this.open_about(window, cx)))
+            .on_action(cx.listener(|_this, _: &QuitApp, window, _cx| {
+                window.remove_window();
+            }))
             .child(self.render_title_bar(window, cx))
+            .child(
+                div()
+                    .flex_none()
+                    .h(px(28.))
+                    .px_2()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().title_bar)
+                    .child(self.menu_bar.clone()),
+            )
             .child(self.render_toolbar(window, cx))
             .child(div().flex_1().min_h_0().child(self.dock.clone()))
             .child(status_bar::render(&self.status_model, cx))
@@ -1953,6 +2379,61 @@ mod tests {
             .into_iter()
             .filter(|kind| layout.is_collapsed(*kind))
             .collect()
+    }
+
+    #[test]
+    fn la_ventana_restaura_maximizado_y_centra_si_la_posicion_no_es_finita() {
+        let cx = gpui_kit::TestAppContext::single();
+        cx.update(|cx| {
+            let maximized = WindowSettings {
+                x: Some(100.0),
+                y: Some(80.0),
+                width: 1200.0,
+                height: 800.0,
+                maximized: true,
+                extra: Default::default(),
+            };
+            assert!(matches!(
+                initial_window_bounds(&maximized, cx),
+                WindowBounds::Maximized(_)
+            ));
+
+            let offscreen = WindowSettings {
+                x: Some(f32::NAN),
+                y: None,
+                maximized: false,
+                ..maximized
+            };
+            assert!(matches!(
+                initial_window_bounds(&offscreen, cx),
+                WindowBounds::Windowed(_)
+            ));
+        });
+    }
+
+    #[test]
+    fn los_menus_cubren_archivo_ver_herramientas_y_ayuda() {
+        let menus = app_menus(&ShellLayout::four_columns());
+        let names: Vec<String> = menus.iter().map(|menu| menu.name.to_string()).collect();
+        assert_eq!(names, ["Archivo", "Ver", "Herramientas", "Ayuda"]);
+        assert!(menus.iter().all(|menu| !menu.items.is_empty()));
+    }
+
+    #[test]
+    fn el_menu_ver_refleja_los_paneles_colapsados() {
+        let mut layout = ShellLayout::four_columns();
+        layout.slot_mut(SlotKind::Chat).unwrap().collapsed = true;
+        let menus = app_menus(&layout);
+        let view = menus
+            .iter()
+            .find(|menu| menu.name == "Ver")
+            .expect("menú Ver");
+        let chat = view
+            .items
+            .iter()
+            .find(|item| matches!(item, MenuItem::Action { name, .. } if name == "Chat IA"))
+            .expect("item Chat IA");
+        assert!(!chat.is_checked());
     }
 
     #[test]

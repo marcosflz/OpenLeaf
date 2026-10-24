@@ -98,7 +98,9 @@ impl ZoomMode {
     pub fn from_setting(value: &str) -> Self {
         match value {
             "fit-page" => ZoomMode::FitPage,
-            "manual" => ZoomMode::Manual,
+            // `actual`/`custom` son los nombres históricos del esquema; ambos
+            // acaban en zoom manual (el kit no tiene un modo "actual" aparte).
+            "manual" | "actual" | "custom" => ZoomMode::Manual,
             _ => ZoomMode::FitWidth,
         }
     }

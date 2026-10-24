@@ -157,6 +157,8 @@ impl SpikeEditor {
                     format!("cursor   {path}:{line}:{column}")
                 }
                 EditorPanelEvent::Status { message } => format!("status   {message}"),
+                // El estado vacío del editor no aplica al binario de spike.
+                _ => return,
             };
             shell.push_log(line, cx);
         });

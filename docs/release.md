@@ -11,9 +11,45 @@ Resumen de las dos rutas: **CI** (recomendada para el instalador ligero) y **loc
 | `agent\opencode.json` | **sí** | sí | config del producto (modelo, permisos, agente) |
 | `agent\opencode.exe` | no (171 MB) | sí | CI lo descarga del release oficial en la versión fijada |
 | `assets\skills\**` | **sí** | sí | skills LaTeX; opencode las ve vía `config/opencode.runtime.json` |
-| `tex\` (TeX Live reducido) | no (4,4 GB) | **no** | el usuario copia/actualiza su `tex\`, o usa el zip `full` |
+| `tex\` (motor LaTeX) | no (4,4 GB) | **sí** (TinyTeX, se descarga al instalar) | verificación SHA-256 y `tlmgr`; `/DBundledTex` lo trae offline |
 | `workspace\` (proyectos) | no | **no** | puede tener documentos personales; `xtask dist` lo omite sin `--with-workspace` |
 | `config\settings.json` | no (estado de usuario) | no | se genera en el primer arranque |
+
+## Motor LaTeX del instalador ligero (P2-INST-1)
+
+El perfil ligero ya no deja al usuario sin motor. Después de elegir la carpeta, la página
+**Motor LaTeX** ofrece tres caminos:
+
+1. **Usar el motor existente** si ya hay `{app}\tex\bin\windows\latexmk.exe`. El instalador
+   no lo modifica ni lo borra; solo verifica `latexmk`, `synctex` y `biber`.
+2. **Descargar TinyTeX-1** (recomendado, ~74 MB) cuando no existe `{app}\tex`. El Setup:
+   - descarga `TinyTeX-1-windows-v2026.10.exe` con progreso y verifica el SHA-256
+     `36c329c644683d981a668419d13c8804696e2816ae4d287ad755788fee231a31`
+     (tamaño 73.701.889 bytes);
+   - lo extrae con el SFX 7z (`-y -o"{app}"`), renombra `{app}\TinyTeX` → `{app}\tex`;
+   - ejecuta `tlmgr update --self` y luego
+     `tlmgr install synctex biber` +
+     `tlmgr install beamer pgf grfext titlesec enumitem preprint marvosym roboto fancyhdr tools babel-spanish babel-english`;
+   - cada paso tiene timeout y escribe salida en `{app}\logs\tex-bootstrap.log`.
+3. **No instalar ahora**: la app se instala igualmente, con un aviso accionable. Se puede
+   reintentar ejecutando de nuevo el instalador. El reintento guiado desde la app
+   (Ajustes → Compilación) es P2-INST-2.
+
+Al terminar se verifican los tres binarios y se escribe `{app}\tex\.lsx-bootstrap.json`
+con versión, hash y estado (`ok` / `partial`). Un fallo de red, hash, extracción o `tlmgr`
+**no aborta** la instalación: deja el aviso, el log y, si es seguro, limpia los restos
+parciales (`{app}\TinyTeX` o un `tex` creado por el propio instalador sin `latexmk`).
+
+En instalación silenciosa (`/VERYSILENT` o `/SILENT`) no hay página: si no hay `tex`, se
+descarga TinyTeX; si ya hay `tex`, se usa sin tocarlo. `/DBundledTex` es la vía **offline**
+y no descarga nada.
+
+> **Límite conocido**: TinyTeX/`latexmk` falla si la ruta de instalación contiene caracteres
+> no ASCII (probado con `ñ`). El instalador detecta esa ruta, no descarga y avisa; para usar
+> TinyTeX hay que elegir una carpeta ASCII (p. ej. `C:\LaTeXStudio`) o usar `/DBundledTex`.
+
+Este flujo entra con la ola 0.2. El asset `v0.1.0` ya publicado no incluye la página ni la
+descarga; sigue siendo un instalador ligero sin motor.
 
 ## Ruta A — CI (instalador ligero)
 
@@ -32,6 +68,10 @@ El workflow `.github/workflows/installer.yml`:
 3. instala Inno Setup 6 con Chocolatey y compila `installer\latex-studio.iss`;
 4. publica como artifact `latex-studio-installer`: el `Setup.exe`, su `.sha256`,
    el `SHA256SUMS.txt` y el `VERSION`.
+
+El artifact es el **perfil ligero**: no contiene `tex\`. Si el usuario no tiene un motor,
+el propio Setup descarga TinyTeX-1 al instalar (con red); `/DBundledTex` sigue siendo la
+vía offline y se monta en local.
 
 Inno Setup 6 ya está instalado en este equipo
 (`%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe`); si faltara en otro,
@@ -102,14 +142,30 @@ que se regenera solo), escribe `VERSION` y `SHA256SUMS.txt` y empaqueta con `tar
 ## Probar el instalador
 
 1. `dist\LaTeX-Studio-Setup.exe` → instala en `%LOCALAPPDATA%\LaTeX Studio` (por usuario).
-2. Primer arranque: el instalador avisa si no hay `tex\bin\windows\latexmk.exe` en la
-   carpeta de instalación (chequeo de M3-3); copia tu `tex\` ahí y recompila desde el botón
-   **Compilar**.
-3. Desinstalar: quita la app, `logs\` y la config generada; **no** toca `workspace\` ni
-   `settings.json` del usuario, ni un `tex\` que el propio usuario haya puesto (solo se
-   borra si el instalador lo trajo: `/DBundledTex`).
-4. Actualizar: vuelve a lanzar el instalador ligero sobre la misma carpeta; sobrescribe
-   la app y el agente y deja `tex\`, `workspace\` y `config\` intactos.
+2. En la página **Motor LaTeX** elige:
+   - **Usar el motor existente** si ya tienes `tex\` (no se toca);
+   - **Descargar TinyTeX-1** en una instalación limpia (necesita red; ~74 MB + paquetes);
+   - **No instalar ahora** para probar el aviso de motor ausente.
+3. Si descargaste TinyTeX, comprueba que existen
+   `%LOCALAPPDATA%\LaTeX Studio\tex\bin\windows\latexmk.exe`, `synctex.exe` y `biber.exe`,
+   y revisa `%LOCALAPPDATA%\LaTeX Studio\logs\tex-bootstrap.log` y
+   `tex\.lsx-bootstrap.json`. En una consola:
+   ```powershell
+   $bin = "$env:LOCALAPPDATA\LaTeX Studio\tex\bin\windows"
+   & "$bin\latexmk.exe" -v
+   & "$bin\biber.exe" --version
+   & "$bin\synctex.exe" --version   # imprime la versión y sale con "Missing options"; es normal
+   ```
+4. Sin red: elige **No instalar ahora** (o deja que falle la descarga). La app queda
+   instalada y el aviso explica cómo reintentar. Para una instalación offline usa
+   `pwsh installer\build.ps1 -BundledTex` (perfil completo).
+5. Desinstalar: quita la app, `logs\` y la config generada; **no** toca `workspace\` ni
+   `settings.json`. El `tex\` descargado con TinyTeX se conserva (puede tener paquetes
+   añadidos); solo el perfil `/DBundledTex` borra `tex\`.
+6. Actualizar: vuelve a lanzar el instalador ligero sobre la misma carpeta; detecta el
+   `tex\` existente, lo reutiliza sin modificarlo y sobrescribe la app y el agente.
+7. Si la ruta contiene acentos o caracteres no ASCII, el instalador no descarga TinyTeX
+   (limitación conocida); usa una carpeta ASCII o el perfil `/DBundledTex`.
 
 ## Verificar un zip/payload
 

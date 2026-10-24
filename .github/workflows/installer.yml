@@ -6,8 +6,9 @@ name: installer
 # están en git, así que el runner los prepara:
 #   - opencode portable: se descarga del release oficial en la versión fijada
 #     (abajo, OPENCODE_VERSION) → agent\opencode.exe
-#   - TeX Live: NO se incluye (instalador ligero, ~85 MB); el usuario copia o
-#     actualiza su carpeta tex\ (o usa el zip `full` montado con `xtask dist`).
+#   - TeX Live: NO se incluye en el payload (instalador ligero). El propio Setup
+#     descarga TinyTeX-1 y ejecuta tlmgr si el usuario no tiene un tex\ existente;
+#     el perfil /DBundledTex (offline) se monta en local con `xtask dist`.
 #
 # Se dispara a mano (workflow_dispatch) o al empujar un tag `v*`.
 on:
@@ -64,7 +65,9 @@ jobs:
         shell: pwsh
         run: |
           if (-not (Get-Command iscc.exe -ErrorAction SilentlyContinue)) {
-            choco install innosetup --no-progress -y
+            # 6.7.3 es la versión con la que se validó DownloadTemporaryFile y
+            # CreateDownloadPage en el instalador (P2-INST-1).
+            choco install innosetup --version=6.7.3 --no-progress -y
           }
           if (-not (Get-Command iscc.exe -ErrorAction SilentlyContinue)) {
             $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'

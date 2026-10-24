@@ -87,6 +87,10 @@ pub enum EditorPanelEvent {
     },
     /// Mensaje corto para la status bar del shell.
     Status { message: String },
+    /// El usuario pulsó «Nuevo proyecto» en el estado vacío.
+    NewProjectRequested,
+    /// El usuario pulsó «Abrir carpeta» en el estado vacío.
+    OpenProjectRequested,
 }
 
 /// Configuración de montaje del panel.
@@ -573,6 +577,29 @@ impl EditorPanel {
         self.active
             .and_then(|ix| self.docs.get(ix))
             .is_some_and(|doc| doc.meta.is_dirty())
+    }
+
+    /// Número de documentos abiertos con cambios sin guardar.
+    pub fn dirty_count(&self) -> usize {
+        self.docs.iter().filter(|doc| doc.meta.is_dirty()).count()
+    }
+
+    /// Guarda todos los documentos sucios. `false` si alguno falló (conflicto,
+    /// E/S); el llamador decide si puede cerrar la ventana.
+    pub fn save_all(&mut self, cx: &mut Context<Self>) -> bool {
+        let dirty: Vec<usize> = self
+            .docs
+            .iter()
+            .enumerate()
+            .filter(|(_, doc)| doc.meta.is_dirty())
+            .map(|(ix, _)| ix)
+            .collect();
+        for ix in dirty {
+            if !self.save_doc(ix, cx) {
+                return false;
+            }
+        }
+        true
     }
 
     /// Cuántas pestañas hay abiertas.
@@ -1619,7 +1646,29 @@ impl EditorPanel {
         bar.into_any_element()
     }
 
-    fn render_empty(&self, cx: &App) -> AnyElement {
+    fn render_empty(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let actions = h_flex()
+            .gap_2()
+            .pt_2()
+            .child(
+                Button::new("editor-empty-new-project")
+                    .primary()
+                    .small()
+                    .label("Nuevo proyecto")
+                    .on_click(cx.listener(|_this, _, _window, cx| {
+                        cx.emit(EditorPanelEvent::NewProjectRequested);
+                    })),
+            )
+            .child(
+                Button::new("editor-empty-open-project")
+                    .outline()
+                    .small()
+                    .label("Abrir carpeta")
+                    .on_click(cx.listener(|_this, _, _window, cx| {
+                        cx.emit(EditorPanelEvent::OpenProjectRequested);
+                    })),
+            );
+
         v_flex()
             .size_full()
             .items_center()
@@ -1631,8 +1680,9 @@ impl EditorPanel {
             .child(
                 div()
                     .text_xs()
-                    .child("Usa EditorPanel::open_file / open_path para abrir una pestaña"),
+                    .child("Abre un archivo del explorador o crea un proyecto para empezar."),
             )
+            .child(actions)
             .into_any_element()
     }
 
@@ -1829,6 +1879,21 @@ mod tests {
                 text.contains("hola"),
                 "el editor debe recibir lo tecleado; texto: {text:?}"
             );
+        });
+    }
+
+    #[test]
+    fn dirty_count_y_save_all_cierran_el_flujo_de_ventana() {
+        let root = temp_project("dirty-all");
+        with_editor(&root, &mut TestAppContext::single(), |cx, editor| {
+            let doc = cx.read(|cx| editor.read(cx).docs[0].editor.clone());
+            let input_id = ("input", doc.entity_id());
+            cx.update(|window, cx| window.click(input_id, cx));
+            cx.update(|window, cx| window.input("cambio", cx));
+            assert_eq!(cx.read(|cx| editor.read(cx).dirty_count()), 1);
+            let saved = cx.update(|_, cx| editor.update(cx, |panel, cx| panel.save_all(cx)));
+            assert!(saved, "save_all debe guardar el documento sucio");
+            assert_eq!(cx.read(|cx| editor.read(cx).dirty_count()), 0);
         });
     }
 

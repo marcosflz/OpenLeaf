@@ -7,12 +7,12 @@
 //! {
 //!   "version": 1,
 //!   "panels": [
-//!     { "id": "tree", "kind": "tree", "width_fraction": 0.18, "collapsed": false },
-//!     { "id": "editor", "kind": "editor", "width_fraction": 0.46, "collapsed": false },
-//!     { "id": "pdf", "kind": "pdf", "width_fraction": 0.21, "collapsed": false },
-//!     { "id": "chat", "kind": "chat", "width_fraction": 0.15, "collapsed": false }
+//!     { "id": "tree", "kind": "tree", "width_fraction": 0.16, "collapsed": false },
+//!     { "id": "editor", "kind": "editor", "width_fraction": 0.36, "collapsed": false },
+//!     { "id": "pdf", "kind": "pdf", "width_fraction": 0.24, "collapsed": false },
+//!     { "id": "chat", "kind": "chat", "width_fraction": 0.24, "collapsed": false }
 //!   ],
-//!   "focus": { "hidden": ["tree"], "previous_fractions": [0.18] }
+//!   "focus": { "hidden": ["tree"], "previous_fractions": [0.16] }
 //! }
 //! ```
 //!
@@ -30,7 +30,11 @@ use serde::{Deserialize, Serialize};
 pub const SCHEMA_VERSION: u32 = 1;
 
 /// Fracciones por defecto de `[árbol | editor | pdf | chat]`.
-const DEFAULT_FRACTIONS: [f32; 4] = [0.18, 0.46, 0.21, 0.15];
+///
+/// El chat y el PDF necesitan algo más de ancho que en el layout original de
+/// M1 para que sus cabeceras (modelo/zoom) no se recorten en ventanas de
+/// 1200–1400 px; el editor sigue siendo la hoja dominante.
+const DEFAULT_FRACTIONS: [f32; 4] = [0.16, 0.36, 0.24, 0.24];
 
 /// Hoja del shell, en orden canónico de izquierda a derecha.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -471,7 +475,7 @@ mod tests {
         let layout = ShellLayout::four_columns();
         let sizes = layout.sizes_px(1_000.0);
         assert_eq!(sizes.len(), 4);
-        assert_eq!(sizes[0], 180.0);
+        assert_eq!(sizes[0], 160.0);
         assert!((sizes.iter().sum::<f32>() - 1_000.0).abs() < 0.5);
     }
 

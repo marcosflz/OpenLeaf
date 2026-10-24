@@ -279,19 +279,27 @@ Reglas: el editor **nunca** escribe en disco directamente — emite `EditorInten
   },
   "latex": {
     "engine": "texlive", "mainFile": null, "autoCompile": true, "debounceMs": 400,
-    "autoInstallPackages": true, "extraArgs": [], "timeoutSecs": 600, "cleanOnSuccess": false
+    "autoInstallPackages": true, "extraArgs": [], "timeoutSecs": 600, "cleanOnSuccess": false,
+    "syncScroll": true
   },
   "pdf": { "zoomMode": "fit-width", "zoom": 1.0, "maxCacheMB": 256, "openExternalOnDoubleClick": true },
   "ai": {
-    "autoStart": true, "port": null, "model": null, "agent": "build",
+    "autoStart": true, "port": null, "model": "opencode-go/deepseek-v4.1-flash", "agent": "build",
     "permissionPreset": "ask", "showReasoning": true, "promptTemplatesDir": "assets/prompts"
   },
-  "ui": { "theme": "dark", "accent": "#4C8DFF", "language": "es", "dock": {}, "reducedMotion": false },
+  "ui": {
+    "theme": "dark", "accent": "#4C8DFF", "language": "es", "dock": {},
+    "window": { "x": null, "y": null, "width": 1280.0, "height": 800.0, "maximized": true },
+    "reducedMotion": false
+  },
   "advanced": { "logLevel": "info", "texBinOverride": null, "opencodeExeOverride": null }
 }
 ```
 - Rutas relativas a la raíz portable; separadores `/` en JSON (normalizados al cargar).
 - `dock` = blob serializado del layout (versión incluida; si no parsea → layout por defecto sin error).
+- `ui.window` = geometría de restaurar de la ventana principal; `x`/`y` nulos = centrar y
+  `maximized` conserva el estado. Si la posición cae fuera de todos los monitores, el shell
+  centra la ventana (P2-UI-3).
 - Escritura atómica + validación por campo (rangos); campos desconocidos se preservan (forward-compat).
 
 **Layout dock (forma estable para tests)**: 4 hojas en split horizontal `[tree, editor, pdf, chat]`, cada una serializa `{id, kind, width_fraction, collapsed}`; focus mode guarda `{hidden: [...], previous_fractions}`.

@@ -406,12 +406,64 @@ pub struct UiSettings {
     /// Layout serializado del dock (opaco para `lsx-core`).
     #[serde(default = "opaque_dock")]
     pub dock: Value,
+    /// Última geometría de la ventana principal.
+    #[serde(default)]
+    pub window: WindowSettings,
     /// Menos animaciones.
     #[serde(default)]
     pub reduced_motion: bool,
     /// Campos desconocidos.
     #[serde(flatten)]
     pub extra: ExtraFields,
+}
+
+/// Geometría persistida de la ventana principal.
+///
+/// `x`/`y` son opcionales para distinguir "primera vez" de "posición 0,0".
+/// `maximized` conserva el estado; `width`/`height` son el tamaño de restaurar
+/// cuando la ventana no está maximizada.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowSettings {
+    /// Origen X en píxeles lógicos; `None` = centrar.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub x: Option<f32>,
+    /// Origen Y en píxeles lógicos; `None` = centrar.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub y: Option<f32>,
+    /// Ancho de restaurar en píxeles lógicos.
+    #[serde(default = "window_width")]
+    pub width: f32,
+    /// Alto de restaurar en píxeles lógicos.
+    #[serde(default = "window_height")]
+    pub height: f32,
+    /// Si la ventana estaba maximizada.
+    #[serde(default = "default_true")]
+    pub maximized: bool,
+    /// Campos desconocidos.
+    #[serde(flatten)]
+    pub extra: ExtraFields,
+}
+
+fn window_width() -> f32 {
+    1280.0
+}
+
+fn window_height() -> f32 {
+    800.0
+}
+
+impl Default for WindowSettings {
+    fn default() -> Self {
+        Self {
+            x: None,
+            y: None,
+            width: window_width(),
+            height: window_height(),
+            maximized: true,
+            extra: ExtraFields::new(),
+        }
+    }
 }
 
 fn ui_theme() -> String {
@@ -437,6 +489,7 @@ impl Default for UiSettings {
             accent: ui_accent(),
             language: ui_language(),
             dock: opaque_dock(),
+            window: WindowSettings::default(),
             reduced_motion: false,
             extra: ExtraFields::new(),
         }
@@ -697,6 +750,40 @@ impl Settings {
             self.ui.accent = ui_accent();
         }
 
+        // Ventana: tamaños absurdos o NaN vuelven a los defaults; una posición
+        // no finita se descarta para que el shell centre la ventana.
+        if !self.ui.window.width.is_finite() || !(640.0..=16_384.0).contains(&self.ui.window.width)
+        {
+            warnings.push(ConfigWarning::new(
+                "ui.window.width",
+                "ancho de ventana inválido; se usa 1280",
+            ));
+            self.ui.window.width = window_width();
+        }
+        if !self.ui.window.height.is_finite()
+            || !(480.0..=16_384.0).contains(&self.ui.window.height)
+        {
+            warnings.push(ConfigWarning::new(
+                "ui.window.height",
+                "alto de ventana inválido; se usa 800",
+            ));
+            self.ui.window.height = window_height();
+        }
+        if self.ui.window.x.is_some_and(|x| !x.is_finite()) {
+            warnings.push(ConfigWarning::new(
+                "ui.window.x",
+                "posición X inválida; se centrará la ventana",
+            ));
+            self.ui.window.x = None;
+        }
+        if self.ui.window.y.is_some_and(|y| !y.is_finite()) {
+            warnings.push(ConfigWarning::new(
+                "ui.window.y",
+                "posición Y inválida; se centrará la ventana",
+            ));
+            self.ui.window.y = None;
+        }
+
         let language = self.ui.language.to_ascii_lowercase();
         if !matches!(language.as_str(), "es" | "en") {
             warnings.push(ConfigWarning::new(
@@ -719,12 +806,17 @@ impl Settings {
         }
 
         let preset = self.ai.permission_preset.to_ascii_lowercase();
-        if !matches!(preset.as_str(), "ask" | "auto") {
+        // `project`/`all` son los presets que escribe el panel de chat;
+        // `auto` se acepta como alias histórico de `all`.
+        if !matches!(preset.as_str(), "ask" | "project" | "all" | "auto") {
             warnings.push(ConfigWarning::new(
                 "ai.permissionPreset",
                 format!("preset de permisos «{preset}» desconocido; se usa ask"),
             ));
             self.ai.permission_preset = ai_permission_preset();
+        } else if preset == "auto" {
+            // Alias histórico del preset que el panel llama `all`.
+            self.ai.permission_preset = "all".to_owned();
         }
 
         warnings
@@ -1011,6 +1103,53 @@ mod tests {
         assert_eq!(settings.ui.language, "es");
         assert_eq!(settings.ai.permission_preset, "ask");
         assert_eq!(warnings.len(), 6);
+    }
+
+    #[test]
+    fn los_presets_de_permisos_del_chat_sobreviven_a_validate() {
+        for (preset, expected) in [
+            ("ask", "ask"),
+            ("project", "project"),
+            ("all", "all"),
+            ("auto", "all"),
+        ] {
+            let mut settings = Settings::default();
+            settings.ai.permission_preset = preset.to_owned();
+            let warnings = settings.validate();
+            assert_eq!(settings.ai.permission_preset, expected);
+            assert!(
+                !warnings.iter().any(|w| w.key == "ai.permissionPreset"),
+                "«{preset}» no debe generar aviso"
+            );
+        }
+    }
+
+    #[test]
+    fn window_state_defaults_to_a_restorable_maximized_window() {
+        let settings = Settings::default();
+        assert_eq!(settings.ui.window.width, 1280.0);
+        assert_eq!(settings.ui.window.height, 800.0);
+        assert!(settings.ui.window.maximized);
+        assert!(settings.ui.window.x.is_none());
+        assert!(settings.ui.window.y.is_none());
+    }
+
+    #[test]
+    fn invalid_window_state_falls_back_to_defaults() {
+        let mut settings = Settings::default();
+        settings.ui.window.width = f32::NAN;
+        settings.ui.window.height = 10.0;
+        settings.ui.window.x = Some(f32::INFINITY);
+        settings.ui.window.y = Some(f32::NEG_INFINITY);
+        let warnings = settings.validate();
+        assert_eq!(settings.ui.window.width, 1280.0);
+        assert_eq!(settings.ui.window.height, 800.0);
+        assert!(settings.ui.window.x.is_none());
+        assert!(settings.ui.window.y.is_none());
+        assert!(warnings.iter().any(|w| w.key == "ui.window.width"));
+        assert!(warnings.iter().any(|w| w.key == "ui.window.height"));
+        assert!(warnings.iter().any(|w| w.key == "ui.window.x"));
+        assert!(warnings.iter().any(|w| w.key == "ui.window.y"));
     }
 
     #[test]

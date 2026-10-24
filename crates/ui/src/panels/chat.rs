@@ -94,23 +94,19 @@ pub enum ChatPanelEvent {
     /// El usuario cambió el preset de permisos: el shell lo persiste en
     /// `ai.permissionPreset`.
     PermissionPresetChanged(String),
+    /// El usuario eligió modelo/agente en los pickers del header: el shell los
+    /// persiste en `ai.model`/`ai.agent` para que sobrevivan al reinicio.
+    SelectionChanged {
+        /// `provider/model`, o `None` si aún no hay modelo.
+        model: Option<String>,
+        agent: String,
+    },
+    /// El usuario quiere configurar la IA (proveedor/modelo): el shell abre
+    /// Ajustes. No se abre un modal dentro del panel para no duplicar estado.
+    OpenAiSettings,
 }
 
 impl EventEmitter<ChatPanelEvent> for ChatPanel {}
-
-/// Paleta oscura «VS Code · Copilot Chat». Copiada del spike aprobado (M0.5):
-/// único punto del panel con hex; no toca el tema global del shell. Los tonos
-/// de texto secundario y bordes se leen del tema (`Ui`), por eso no están aquí.
-mod color {
-    /// Fondo del panel.
-    pub const PANEL: u32 = 0x151A21;
-    /// Texto principal (inline code del markdown).
-    pub const FG: u32 = 0xE6EAF2;
-    /// Superficie sutil (bloques de usuario, chips, hover).
-    pub const SURFACE: u32 = 0x1E2530;
-    /// Fondo de bloques de código (más oscuro que el panel).
-    pub const CODE_BG: u32 = 0x0E1218;
-}
 
 /// Política de permisos del agente (botón «Permisos» del header).
 ///
@@ -293,6 +289,8 @@ struct Ui {
     fg: Hsla,
     fg_muted: Hsla,
     surface: Hsla,
+    panel: Hsla,
+    code_bg: Hsla,
     border: Hsla,
     accent: Hsla,
     success: Hsla,
@@ -308,6 +306,8 @@ impl Ui {
             fg: theme.foreground,
             fg_muted: theme.muted_foreground,
             surface: theme.muted,
+            panel: theme.background,
+            code_bg: theme.muted,
             border: theme.border,
             accent: theme.primary,
             success: theme.success,
@@ -318,11 +318,11 @@ impl Ui {
     }
 }
 
-/// Estilo de los markdown de la conversación (copiado del spike aprobado).
-fn rich_style() -> TextViewStyle {
-    let code_block = StyleRefinement::default()
-        .bg(rgb(color::CODE_BG))
-        .text_size(px(12.));
+/// Estilo de los markdown de la conversación. Se resuelve con los tokens del
+/// tema activo para que el chat siga el modo claro/oscuro como el resto del
+/// shell (antes usaba una paleta fija oscura).
+fn rich_style(ui: &Ui) -> TextViewStyle {
+    let code_block = StyleRefinement::default().bg(ui.code_bg).text_size(px(12.));
     TextViewStyle::default()
         .heading_font_size(|level, _base| match level {
             1 => px(15.),
@@ -331,15 +331,15 @@ fn rich_style() -> TextViewStyle {
         })
         .code_block(code_block)
         .inline_code(HighlightStyle {
-            background_color: Some(rgb(color::SURFACE).into()),
-            color: Some(rgb(color::FG).into()),
+            background_color: Some(ui.surface),
+            color: Some(ui.fg),
             ..Default::default()
         })
 }
 
 /// Estilo compacto del razonamiento (markdown secundario).
-fn reasoning_style() -> TextViewStyle {
-    rich_style().paragraph_gap(rems(0.5))
+fn reasoning_style(ui: &Ui) -> TextViewStyle {
+    rich_style(ui).paragraph_gap(rems(0.5))
 }
 
 /// Panel de chat IA del shell.
@@ -875,6 +875,7 @@ impl ChatPanel {
     }
 
     fn select_model(&mut self, entry: &ModelEntry, cx: &mut Context<Self>) {
+        let model = format!("{}/{}", entry.provider_id, entry.model_id);
         self.conversation.set_model(Some(ModelRef::new(
             entry.provider_id.clone(),
             entry.model_id.clone(),
@@ -886,11 +887,24 @@ impl ChatPanel {
             },
             cx,
         );
+        cx.emit(ChatPanelEvent::SelectionChanged {
+            model: Some(model),
+            agent: self.agent_label(),
+        });
     }
 
     fn select_agent(&mut self, agent: String, cx: &mut Context<Self>) {
         self.conversation.set_agent(agent.clone());
-        self.send_command(ChatCmd::SetAgent { name: agent }, cx);
+        self.send_command(
+            ChatCmd::SetAgent {
+                name: agent.clone(),
+            },
+            cx,
+        );
+        cx.emit(ChatPanelEvent::SelectionChanged {
+            model: self.model_full(),
+            agent,
+        });
     }
 
     fn on_toggle_tool(&mut self, part_id: String, cx: &mut Context<Self>) {
@@ -1110,9 +1124,14 @@ impl ChatPanel {
             .dropdown_menu_with_anchor(Anchor::BottomRight, move |menu, _window, _cx| {
                 let mut menu = menu.label("Modelo");
                 if models.is_empty() {
-                    return menu.item(
-                        PopupMenuItem::new("Sin catálogo (arranca el server)").disabled(true),
-                    );
+                    let weak = weak.clone();
+                    return menu.item(PopupMenuItem::new("Configurar IA en Ajustes…").on_click(
+                        move |_, _window, cx| {
+                            let _ = weak.update(cx, |_panel, cx| {
+                                cx.emit(ChatPanelEvent::OpenAiSettings);
+                            });
+                        },
+                    ));
                 }
                 let mut provider = String::new();
                 for entry in &models {
@@ -1307,9 +1326,14 @@ impl ChatPanel {
             .dropdown_menu_with_anchor(Anchor::BottomRight, move |menu, _window, _cx| {
                 let mut menu = menu.label("Agente");
                 if agents.is_empty() {
-                    return menu.item(
-                        PopupMenuItem::new("Sin agentes (arranca el server)").disabled(true),
-                    );
+                    let weak = weak.clone();
+                    return menu.item(PopupMenuItem::new("Configurar IA en Ajustes…").on_click(
+                        move |_, _window, cx| {
+                            let _ = weak.update(cx, |_panel, cx| {
+                                cx.emit(ChatPanelEvent::OpenAiSettings);
+                            });
+                        },
+                    ));
                 }
                 for agent in &agents {
                     let name = agent.name.clone();
@@ -1525,7 +1549,7 @@ impl ChatPanel {
                                     text,
                                 )
                                 .selectable(true)
-                                .style(rich_style())
+                                .style(rich_style(ui))
                             })),
                     );
             }
@@ -1609,7 +1633,7 @@ impl ChatPanel {
                     text.clone(),
                 )
                 .selectable(true)
-                .style(rich_style())
+                .style(rich_style(ui))
                 .code_block_actions(|block, _window, cx| {
                     let theme = cx.theme();
                     h_flex()
@@ -1689,7 +1713,7 @@ impl ChatPanel {
                             SharedString::from(format!("reasoning-text-{part_id}")),
                             truncate_ui(text, 8000),
                         )
-                        .style(reasoning_style()),
+                        .style(reasoning_style(ui)),
                     );
                 Some(
                     Collapsible::new()
@@ -1893,7 +1917,7 @@ impl ChatPanel {
                     .rounded(px(tok::R_SM))
                     .border_1()
                     .border_color(ui.border)
-                    .bg(rgb(color::CODE_BG))
+                    .bg(ui.code_bg)
                     .px(px(8.))
                     .py(px(5.))
                     .font_family(ui.mono.clone())
@@ -2199,7 +2223,7 @@ impl Render for ChatPanel {
         let ui = Ui::new(cx);
         v_flex()
             .size_full()
-            .bg(rgb(color::PANEL))
+            .bg(ui.panel)
             .text_color(ui.fg)
             .track_focus(&self.focus)
             .child(self.render_header(&ui, cx))

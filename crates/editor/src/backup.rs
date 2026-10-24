@@ -311,6 +311,10 @@ mod tests {
         let store = BackupStore::new(&dir.0);
         let rel = Path::new("main.tex");
         store.write(rel, "a").unwrap();
+        // Los nombres de backup llevan timestamp con resolución de segundos:
+        // sin esperar, la segunda escritura puede pisar a la primera y el test
+        // se vuelve intermitente (visto en el gate 0.2).
+        wait_tick();
         store.write(rel, "b").unwrap();
         assert_eq!(store.remove_for(rel).unwrap(), 2);
         assert!(store.entries_for(rel).is_empty());

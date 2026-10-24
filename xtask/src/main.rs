@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 mod dist;
+mod kb;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -21,7 +22,8 @@ fn main() {
         "fixtures" => println!("TODO(M0): restaurar fixtures"),
         "pdf-golden" => println!("TODO(M0-S3): comparativa PDF"),
         "dist" => dist::run(&args[2..]),
-        "" => println!("tareas: chat-replay | fixtures | pdf-golden | dist"),
+        "kb" => kb::run(&args[2..]),
+        "" => println!("tareas: chat-replay | fixtures | pdf-golden | dist | kb"),
         other => {
             eprintln!("tarea desconocida: {other}");
             std::process::exit(2);

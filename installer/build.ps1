@@ -5,10 +5,14 @@
     - Busca ISCC.exe (Inno Setup 6). Con -InstallInno intenta instalarlo con
       winget (o descarga directa) **sin administrador**.
     - Compila installer\latex-studio.iss y deja el Setup en dist\.
+    - Perfil ligero (por defecto): el Setup incluye la página "Motor LaTeX" y,
+      si no hay un tex\ existente, descarga TinyTeX-1 (~74 MB) y ejecuta tlmgr
+      durante la instalación. No necesita tex\ en tiempo de build.
+    - Perfil -BundledTex: incluye dist\latex-ide\tex\ (offline, ~4,4 GB).
 
     Uso:
-      pwsh -File installer\build.ps1                 # instalador ligero (~85 MB)
-      pwsh -File installer\build.ps1 -BundledTex     # completo (incluye tex\, ~4,4 GB)
+      pwsh -File installer\build.ps1                 # ligero; TinyTeX se descarga al instalar
+      pwsh -File installer\build.ps1 -BundledTex     # completo/offline (incluye tex\)
       pwsh -File installer\build.ps1 -InstallInno    # instala Inno Setup si falta
       pwsh -File installer\build.ps1 -SkipBuild      # no re-monta dist\latex-ide
 #>
@@ -54,6 +58,9 @@ if (-not (Test-Path (Join-Path $dist 'latex-studio.exe'))) {
 }
 if ($BundledTex -and -not (Test-Path (Join-Path $dist 'tex\bin\windows\latexmk.exe'))) {
     throw "con -BundledTex, $dist\tex debe ser un TeX Live reducido (falta bin\windows\latexmk.exe)"
+}
+if (-not $BundledTex) {
+    Write-Host 'Perfil ligero: el Setup descargará TinyTeX-1 al instalar si no encuentra un tex existente.' -ForegroundColor DarkGray
 }
 
 # --- 2. Inno Setup ----------------------------------------------------------

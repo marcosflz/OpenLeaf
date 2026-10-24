@@ -34,9 +34,9 @@ fn main() {
             lsx_ui::theme::apply(&settings, cx);
 
             let options = WindowOptions {
-                // Maximizada: con escala de pantalla >100 % un tamaño lógico
-                // fijo puede exceder el área visible.
-                window_bounds: Some(WindowBounds::Maximized(Bounds::default())),
+                // Restaura la última geometría; si no hay o quedó fuera de
+                // pantalla, se centra. El primer arranque abre maximizado.
+                window_bounds: Some(lsx_ui::app::initial_window_bounds(&settings.ui.window, cx)),
                 window_min_size: Some(size(px(960.), px(600.))),
                 titlebar: Some(TitlebarOptions {
                     title: Some("LaTeX Studio".into()),

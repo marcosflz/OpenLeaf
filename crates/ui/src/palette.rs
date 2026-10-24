@@ -31,15 +31,13 @@ pub enum PaletteCommand {
     ReloadTree,
     /// Abrir otra carpeta de proyecto.
     OpenProject,
-    /// Probar el modal de permiso (demo M1-A4).
-    PermissionDemo,
     /// Crear un proyecto nuevo desde plantilla (M1-F4).
     NewProject,
 }
 
 impl PaletteCommand {
     /// Orden fijo de la paleta (el índice del item = índice del array).
-    pub const ALL: [PaletteCommand; 11] = [
+    pub const ALL: [PaletteCommand; 10] = [
         PaletteCommand::Compile,
         PaletteCommand::ToggleTree,
         PaletteCommand::ToggleEditor,
@@ -49,7 +47,6 @@ impl PaletteCommand {
         PaletteCommand::OpenSettings,
         PaletteCommand::ReloadTree,
         PaletteCommand::OpenProject,
-        PaletteCommand::PermissionDemo,
         PaletteCommand::NewProject,
     ];
 
@@ -65,8 +62,7 @@ impl PaletteCommand {
             PaletteCommand::OpenSettings => 6,
             PaletteCommand::ReloadTree => 7,
             PaletteCommand::OpenProject => 8,
-            PaletteCommand::PermissionDemo => 9,
-            PaletteCommand::NewProject => 10,
+            PaletteCommand::NewProject => 9,
         }
     }
 
@@ -87,7 +83,6 @@ impl PaletteCommand {
             PaletteCommand::OpenSettings => rust_i18n::t!("ui.app.palette.settings"),
             PaletteCommand::ReloadTree => rust_i18n::t!("ui.app.palette.reload_tree"),
             PaletteCommand::OpenProject => rust_i18n::t!("ui.app.palette.open_project"),
-            PaletteCommand::PermissionDemo => rust_i18n::t!("ui.app.palette.permission_demo"),
             PaletteCommand::NewProject => rust_i18n::t!("ui.app.palette.new_project"),
         }
         .to_string()
@@ -105,7 +100,6 @@ impl PaletteCommand {
             PaletteCommand::OpenSettings => IconName::Settings,
             PaletteCommand::ReloadTree => IconName::RefreshCw,
             PaletteCommand::OpenProject => IconName::FolderOpen,
-            PaletteCommand::PermissionDemo => IconName::ShieldCheck,
             PaletteCommand::NewProject => IconName::FolderPlus,
         }
     }
@@ -122,7 +116,6 @@ impl PaletteCommand {
             PaletteCommand::OpenSettings => &["settings", "config", "ajustes"],
             PaletteCommand::ReloadTree => &["refresh", "recargar", "arbol"],
             PaletteCommand::OpenProject => &["workspace", "carpeta", "proyecto"],
-            PaletteCommand::PermissionDemo => &["permiso", "modal", "demo"],
             PaletteCommand::NewProject => &["nuevo", "proyecto", "plantilla", "crear"],
         }
     }
