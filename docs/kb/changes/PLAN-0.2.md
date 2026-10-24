@@ -201,7 +201,7 @@ verified: true
 
 ### P2-QA-1 — Gate G2.5
 
-- **Estado:** ⏳ PLANNED
+- **Estado:** 🟡 PARCIAL (PASS técnico; falta release real y validación manual)
 - **Territorio:** `docs/qa/reports/**`, `docs/board.md`
 - **Depende de:** P2-INST-1/2, P2-UI-1/2/3/4, P2-AI-1/2.
 - **Entrega:** informe con:

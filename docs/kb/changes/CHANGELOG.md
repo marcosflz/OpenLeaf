@@ -17,6 +17,16 @@ verified: true
 > Formato: `CHG-NNNN`. Estado: `planned` · `doing` · `done` · `reverted`.
 > El estado vivo de las tareas está en `PLAN-0.2.md`; aquí queda la historia.
 
+## CHG-0011 — Informe del gate G2.5
+
+- **Fecha:** 2026-10-24
+- **Tarea:** `P2-QA-1`
+- **Estado:** doing
+- **Territorio:** `docs/qa/reports/G2.5-2026-10-24.md`, `docs/board.md`
+- **Qué cambia:** PASS técnico con 357 tests, instalación limpia con TinyTeX y capturas;
+  quedan pendientes el payload de release con `agent/opencode.exe` y las pruebas manuales.
+- **Por qué:** separar “código verificado” de “release aceptada”.
+
 ## CHG-0010 — Status bar accionable
 
 - **Fecha:** 2026-10-24

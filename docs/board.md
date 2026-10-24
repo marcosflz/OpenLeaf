@@ -126,7 +126,7 @@ calidad, plan y changelog). `AGENTS.md` obliga a leerlo y mantenerlo; skill
 | P2-UI-3 Ventana/menús/cierre seguro | ✅ DONE | `ui.window`, `AppMenuBar`, cierre seguro; capturas |
 | P2-INST-2 Recuperación del motor | 🟡 PARCIAL | probe real + overrides + diálogo; falta bootstrap guiado |
 | P2-UI-4 Bienvenida/pulido/retirada demo | 🟡 DOING | demo retirada; estado vacío con acciones |
-| P2-QA-1 Gate G2.5 | ⏳ PLANNED | tras O-1 |
+| P2-QA-1 Gate G2.5 | 🟡 PARCIAL | `docs/qa/reports/G2.5-2026-10-24.md`; falta payload release + chat live |
 
 **Auditoría**: `docs/kb/quality/01-auditoria-2026-10-24.md` (42 hallazgos S1–S4).
 **Plan**: `docs/kb/changes/PLAN-0.2.md` · **Changelog**: `docs/kb/changes/CHANGELOG.md`.
