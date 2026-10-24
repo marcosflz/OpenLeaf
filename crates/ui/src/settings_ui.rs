@@ -1977,6 +1977,16 @@ pub fn open_ai_dialog(
     open_dialog_at(window, cx, settings, root, Section::Ai);
 }
 
+/// Abre Ajustes en la sección de compilación (estado del motor LaTeX).
+pub fn open_compilation_dialog(
+    window: &mut Window,
+    cx: &mut App,
+    settings: Settings,
+    root: WeakEntity<AppRoot>,
+) {
+    open_dialog_at(window, cx, settings, root, Section::Compilation);
+}
+
 fn open_dialog_at(
     window: &mut Window,
     cx: &mut App,

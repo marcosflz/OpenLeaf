@@ -47,8 +47,8 @@ use lsx_core::config::{ConfigWarning, Settings, WindowSettings};
 use lsx_core::root::PortableRoot;
 use lsx_editor::document::AutosaveConfig;
 use lsx_latex::{
-    CompileController, CompileEvent, CompileStatus, Diagnostic, LatexEngine, LatexSettings,
-    TexLiveEngine, detect_main,
+    CompileController, CompileEvent, CompileStatus, Diagnostic, EngineInfo, LatexEngine,
+    LatexSettings, TexLiveEngine, TexLivePaths, detect_main,
 };
 
 use crate::layout::{FocusMode, ShellLayout, SlotKind};
@@ -175,6 +175,9 @@ pub struct AppRoot {
     problems: Entity<ProblemsPanel>,
     project_root: Option<PathBuf>,
     latex_settings: LatexSettings,
+    /// `tex/bin/windows` efectivo (override de Ajustes o `tex/` portable).
+    tex_bin: PathBuf,
+    engine_info: Option<EngineInfo>,
     compile: Option<Arc<CompileController>>,
     /// Scroll sync automático `.tex` ↔ PDF (`latex.syncScroll`, M1-C5).
     sync_scroll: bool,
@@ -203,6 +206,7 @@ pub struct AppRoot {
     window_state_dirty: bool,
     _status_task: Task<()>,
     _compile_task: Task<()>,
+    _engine_task: Task<()>,
     _dock_events: Subscription,
     _pane_events: Vec<Subscription>,
     _integration_events: Vec<Subscription>,
@@ -270,12 +274,13 @@ impl AppRoot {
         let bottom = cx.new(|cx| BottomPanel::new(problems.clone(), symbols, cx));
         tree.update(cx, |tree, cx| tree.attach_bottom(bottom.clone(), cx));
         let editor = cx.new(|cx| EditorSlot::new(editor_panel.clone(), Some(dock.downgrade()), cx));
+        let tex_bin = resolve_tex_bin(&settings, &portable);
         let pdf_panel = cx.new(|cx| PdfPanel::with_cache_mb(settings.pdf.max_cache_mb, cx));
         // `synctex.exe` de la distro portable: lo usan el salto inverso
         // (Ctrl+clic) y el scroll sync inverso (M1-C5). El shell reacciona a
         // `PdfPanelEvent::InverseJump` para decidir salto vs scroll.
         pdf_panel.update(cx, |panel, cx| {
-            panel.set_synctex_exe(portable.synctex_exe());
+            panel.set_synctex_exe(tex_bin.join("synctex.exe"));
             let mode = ZoomMode::from_setting(&settings.pdf.zoom_mode);
             panel.set_zoom_mode(mode, cx);
             if mode == ZoomMode::Manual {
@@ -289,21 +294,19 @@ impl AppRoot {
             .as_ref()
             .map(|project| project.name.clone())
             .unwrap_or_else(|| "LaTeX Studio".to_owned());
-        let chat_panel = cx.new(|cx| {
-            ChatPanel::new(
-                window,
-                cx,
-                ChatPanelConfig::from_root(
-                    &portable,
-                    &chat_root,
-                    chat_project_name,
-                    &settings.ai,
-                    status_handle.clone(),
-                    Some(editor_panel.clone()),
-                    Some(problems.clone()),
-                ),
-            )
-        });
+        let mut chat_config = ChatPanelConfig::from_root(
+            &portable,
+            &chat_root,
+            chat_project_name,
+            &settings.ai,
+            status_handle.clone(),
+            Some(editor_panel.clone()),
+            Some(problems.clone()),
+        );
+        if let Some(path) = &settings.advanced.opencode_exe_override {
+            chat_config.exe = resolve_opencode_exe(path);
+        }
+        let chat_panel = cx.new(|cx| ChatPanel::new(window, cx, chat_config));
         let chat_events = chat_panel.clone();
         let chat = cx.new(|cx| ChatSlot::new(chat_panel, Some(dock.downgrade()), cx));
 
@@ -376,6 +379,7 @@ impl AppRoot {
         // --- Compilación (integración M1): motor real + cola con debounce -----
         let latex_settings = bridge_latex_settings(&settings.latex);
         let sync_scroll = settings.latex.sync_scroll;
+        let tex_bin_utf8 = Utf8PathBuf::from_path_buf(tex_bin.clone()).ok();
         let startup_main: Option<Utf8PathBuf> = project_root
             .as_deref()
             .and_then(Utf8Path::from_path)
@@ -384,17 +388,20 @@ impl AppRoot {
                     .ok()
                     .flatten()
             });
-        let compile: Option<Arc<CompileController>> = TexLiveEngine::detect().ok().map(|engine| {
-            let engine: Arc<dyn LatexEngine> = Arc::new(engine);
-            let controller = CompileController::with_settings(engine, &latex_settings);
-            if let (Some(root), Some(main)) = (
-                project_root.as_deref().and_then(Utf8Path::from_path),
-                startup_main.as_ref(),
-            ) {
-                controller.set_request(latex_settings.request(root, main.clone()));
-            }
-            Arc::new(controller)
-        });
+        let compile: Option<Arc<CompileController>> = tex_bin_utf8
+            .filter(|bin| bin.join("latexmk.exe").is_file())
+            .map(|bin| {
+                let engine: Arc<dyn LatexEngine> =
+                    Arc::new(TexLiveEngine::new(TexLivePaths::from_bin(bin)));
+                let controller = CompileController::with_settings(engine, &latex_settings);
+                if let (Some(root), Some(main)) = (
+                    project_root.as_deref().and_then(Utf8Path::from_path),
+                    startup_main.as_ref(),
+                ) {
+                    controller.set_request(latex_settings.request(root, main.clone()));
+                }
+                Arc::new(controller)
+            });
         let compile_task = if let Some(controller) = &compile {
             let rx = controller.subscribe();
             cx.spawn(async move |this, cx| {
@@ -493,12 +500,11 @@ impl AppRoot {
         let focus = cx.focus_handle();
         let palette = cx.new(|cx| CommandState::new(window, cx));
 
-        // Motor LaTeX: solo comprobación de presencia (el probe real llega en M1-D1).
-        let latexmk = portable.latexmk();
-        let engine_available = latexmk.is_file();
+        // Motor LaTeX: presencia inmediata + probe real asíncrono (`probe_engine`).
+        let engine_available = tex_bin.join("latexmk.exe").is_file();
         let status_model = StatusModel {
             engine_label: if engine_available {
-                rust_i18n::t!("ui.app.engine.ready").to_string()
+                "TeX Live (comprobando…)".to_owned()
             } else {
                 rust_i18n::t!("ui.app.engine.missing").to_string()
             },
@@ -546,6 +552,8 @@ impl AppRoot {
             problems,
             project_root,
             latex_settings,
+            tex_bin,
+            engine_info: None,
             compile,
             sync_scroll,
             sync_seq: 0,
@@ -565,6 +573,7 @@ impl AppRoot {
             window_state_dirty: false,
             _status_task: status_task,
             _compile_task: compile_task,
+            _engine_task: cx.spawn(async move |_this, _cx| {}),
             _dock_events: dock_events,
             _pane_events: pane_events,
             _integration_events: integration_events,
@@ -600,6 +609,12 @@ impl AppRoot {
                         root.open_settings(window, cx);
                     }
                 });
+            });
+        }
+        if std::env::var_os("LSX_QA_OPEN_ENGINE").is_some() {
+            let weak = cx.weak_entity();
+            window.defer(cx, move |window, cx| {
+                let _ = weak.update(cx, |root, cx| root.open_engine_help(window, cx));
             });
         }
 
@@ -652,6 +667,7 @@ impl AppRoot {
         // encuentren un `on_action` vivo.
         let handle = root.focus.clone();
         window.defer(cx, move |window, cx| handle.focus(window, cx));
+        root.probe_engine(cx);
         root
     }
 
@@ -1027,6 +1043,133 @@ impl AppRoot {
                         )
                 })))
         });
+    }
+
+    /// Comprueba el motor real en background (versión, synctex, tlmgr).
+    fn probe_engine(&mut self, cx: &mut Context<Self>) {
+        let Ok(bin) = Utf8PathBuf::from_path_buf(self.tex_bin.clone()) else {
+            self.status_model.engine_available = false;
+            self.status_model.engine_label = "TeX Live no disponible (ruta no UTF-8)".to_owned();
+            cx.notify();
+            return;
+        };
+        self.status_model.engine_available = bin.join("latexmk.exe").is_file();
+        self.status_model.engine_label = "TeX Live (comprobando…)".to_owned();
+        cx.notify();
+        self._engine_task = cx.spawn(async move |this, cx| {
+            let info = cx
+                .background_spawn(async move {
+                    TexLiveEngine::new(TexLivePaths::from_bin(bin)).probe().ok()
+                })
+                .await;
+            this.update(cx, |root, cx| {
+                root.engine_info = info;
+                match &root.engine_info {
+                    Some(info) if info.available => {
+                        let version = info.version.as_deref().unwrap_or("?");
+                        let mut label = format!("TeX Live {version}");
+                        if info.synctex.is_none() {
+                            label.push_str(" · sin SyncTeX");
+                        }
+                        root.status_model.engine_available = true;
+                        root.status_model.engine_label = label;
+                    }
+                    Some(_) => {
+                        root.status_model.engine_available = false;
+                        root.status_model.engine_label = "TeX Live con error".to_owned();
+                    }
+                    None => {
+                        root.status_model.engine_available = false;
+                        root.status_model.engine_label = "TeX Live no encontrado".to_owned();
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        });
+    }
+
+    /// Explica el estado del motor y ofrece reintentar/abrir Ajustes.
+    fn open_engine_help(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let weak = cx.weak_entity();
+        let info = self.engine_info.clone();
+        let tex_bin = self.tex_bin.clone();
+        let available = self.status_model.engine_available;
+        let engine_label = self.status_model.engine_label.clone();
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let sync = info
+                .as_ref()
+                .and_then(|info| info.synctex.as_ref())
+                .is_some()
+                || tex_bin.join("synctex.exe").is_file();
+            let biber = tex_bin.join("biber.exe").is_file();
+            let detail = if available {
+                format!(
+                    "Motor disponible: {engine_label}.\nSyncTeX: {} · biber: {}.\n\n\
+                     LaTeX Studio lo usa desde:\n{}",
+                    if sync { "sí" } else { "no" },
+                    if biber { "sí" } else { "no" },
+                    tex_bin.display()
+                )
+            } else {
+                format!(
+                    "No se encontró un motor LaTeX utilizable.\n\n\
+                     Vuelve a ejecutar el instalador y elige «Descargar TinyTeX-1», o copia un \
+                     TeX Live con latexmk/synctex/biber en:\n{}\n\n\
+                     También puedes usar Ajustes → Compilación para revisar la ruta.",
+                    tex_bin.display()
+                )
+            };
+            let weak_retry = weak.clone();
+            let weak_settings = weak.clone();
+            let folder = tex_bin.clone();
+            dialog
+                .title("Motor LaTeX")
+                .width(px(620.))
+                .child(DialogDescription::new().child(detail))
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            Button::new("engine-open-folder")
+                                .label("Abrir carpeta")
+                                .outline()
+                                .on_click(move |_, window, cx| {
+                                    if let Err(error) = crate::ai_setup::open_folder(&folder) {
+                                        notifications::error(error.to_string(), window, cx);
+                                    }
+                                }),
+                        )
+                        .child(
+                            Button::new("engine-settings")
+                                .label("Abrir Ajustes")
+                                .outline()
+                                .on_click(move |_, window, cx| {
+                                    window.close_dialog(cx);
+                                    let _ = weak_settings.update(cx, |root, cx| {
+                                        root.open_compilation_settings(window, cx);
+                                    });
+                                }),
+                        )
+                        .child(
+                            Button::new("engine-retry")
+                                .label("Reintentar")
+                                .primary()
+                                .on_click(move |_, window, cx| {
+                                    let _ = weak_retry.update(cx, |root, cx| {
+                                        root.probe_engine(cx);
+                                    });
+                                    window.close_dialog(cx);
+                                    notifications::info("Comprobando el motor LaTeX…", window, cx);
+                                }),
+                        ),
+                )
+        });
+    }
+
+    fn open_compilation_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let settings = self.settings.clone();
+        let weak = cx.weak_entity();
+        settings_ui::open_compilation_dialog(window, cx, settings, weak);
     }
 
     fn open_about(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1439,7 +1582,7 @@ impl AppRoot {
         ) else {
             return;
         };
-        let Ok(exe) = Utf8PathBuf::from_path_buf(self.portable.synctex_exe()) else {
+        let Ok(exe) = Utf8PathBuf::from_path_buf(self.tex_bin.join("synctex.exe")) else {
             return;
         };
         let synctex = lsx_latex::Synctex::new(exe);
@@ -1537,7 +1680,7 @@ impl AppRoot {
         else {
             return;
         };
-        let Ok(exe) = Utf8PathBuf::from_path_buf(self.portable.synctex_exe()) else {
+        let Ok(exe) = Utf8PathBuf::from_path_buf(self.tex_bin.join("synctex.exe")) else {
             return;
         };
         let synctex = lsx_latex::Synctex::new(exe);
@@ -1794,6 +1937,7 @@ impl AppRoot {
                 cx,
                 &self.status_model.engine_label.clone(),
                 self.status_model.engine_available,
+                cx.listener(|this, _, window, cx| this.open_engine_help(window, cx)),
             ))
             .child(div().flex_1())
             .child(toggles)
@@ -2125,6 +2269,40 @@ impl Render for EditorSlot {
     }
 }
 
+/// `tex/bin/windows` efectivo: override de `advanced.texBinOverride` o el
+/// `tex/` portable. Acepta tanto el directorio `bin` como el `latexmk.exe`.
+fn resolve_tex_bin(settings: &Settings, portable: &PortableRoot) -> PathBuf {
+    if let Some(raw) = &settings.advanced.tex_bin_override {
+        let path = PathBuf::from(raw);
+        if path.join("latexmk.exe").is_file() {
+            return path;
+        }
+        if path.is_file()
+            && path
+                .file_name()
+                .is_some_and(|name| name.eq_ignore_ascii_case("latexmk.exe"))
+            && let Some(parent) = path.parent()
+        {
+            return parent.to_path_buf();
+        }
+        tracing::warn!(
+            target: "lsx::ui",
+            path = %path.display(),
+            "advanced.texBinOverride no contiene latexmk.exe; se usa tex/ portable"
+        );
+    }
+    portable.tex_dir().join("bin").join("windows")
+}
+
+fn resolve_opencode_exe(raw: &str) -> PathBuf {
+    let path = PathBuf::from(raw);
+    if path.is_dir() {
+        path.join("opencode.exe")
+    } else {
+        path
+    }
+}
+
 /// Calcula los bounds iniciales de la ventana a partir de `ui.window`.
 ///
 /// Si la posición guardada ya no cae en ningún monitor visible (por ejemplo,
@@ -2387,6 +2565,44 @@ mod tests {
             .into_iter()
             .filter(|kind| layout.is_collapsed(*kind))
             .collect()
+    }
+
+    #[test]
+    fn resolve_tex_bin_respeta_el_override_y_cae_al_portable() {
+        let root = std::env::temp_dir().join(format!("lsx-ui-texbin-{}", std::process::id()));
+        let portable_bin = root.join("tex").join("bin").join("windows");
+        let override_bin = root.join("otro-tex").join("bin").join("windows");
+        std::fs::create_dir_all(&portable_bin).unwrap();
+        std::fs::create_dir_all(&override_bin).unwrap();
+        std::fs::write(portable_bin.join("latexmk.exe"), b"x").unwrap();
+        std::fs::write(override_bin.join("latexmk.exe"), b"x").unwrap();
+
+        let portable = PortableRoot::from_dir(&root);
+        let mut settings = Settings::default();
+        assert_eq!(resolve_tex_bin(&settings, &portable), portable_bin);
+
+        settings.advanced.tex_bin_override = Some(override_bin.display().to_string());
+        assert_eq!(resolve_tex_bin(&settings, &portable), override_bin);
+
+        settings.advanced.tex_bin_override =
+            Some(override_bin.join("latexmk.exe").display().to_string());
+        assert_eq!(resolve_tex_bin(&settings, &portable), override_bin);
+
+        settings.advanced.tex_bin_override = Some(root.join("no-existe").display().to_string());
+        assert_eq!(resolve_tex_bin(&settings, &portable), portable_bin);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn resolve_opencode_exe_acepta_fichero_o_carpeta() {
+        assert_eq!(
+            resolve_opencode_exe("C:/tools/opencode.exe"),
+            PathBuf::from("C:/tools/opencode.exe")
+        );
+        assert_eq!(
+            resolve_opencode_exe("."),
+            PathBuf::from(".").join("opencode.exe")
+        );
     }
 
     #[test]

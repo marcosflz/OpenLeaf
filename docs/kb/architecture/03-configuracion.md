@@ -39,8 +39,8 @@ atómico (temp + rename) y preserva campos desconocidos (`ExtraFields`).
 | `latex` | `engine`, `mainFile`, `autoCompile`, `debounceMs`, `autoInstallPackages`, `extraArgs`, `timeoutSecs`, `cleanOnSuccess`, `syncScroll` | usado por `CompileController`/shell, salvo `engine` (solo texlive) |
 | `pdf` | `zoomMode`, `zoom`, `maxCacheMB`, `openExternalOnDoubleClick` | caché, modo y zoom se pasan a `PdfPanel`; el doble clic aún no está conectado |
 | `ai` | `autoStart`, `port`, `model`, `agent`, `permissionPreset`, `showReasoning`, `promptTemplatesDir` | `ChatPanelConfig` los lee al construir el panel; el picker del chat ya persiste modelo/agente (P2-AI-2). Los cambios hechos en Ajustes se aplican al reiniciar el chat. `permissionPreset` acepta `ask`/`project`/`all` (`auto` como alias) |
-| `ui` | `theme`, `accent`, `language`, `dock`, `window`, `reducedMotion` | tema/acento/dock/ventana sí; `system` ya consulta el SO; `reducedMotion` se proyecta en `App::set_reduce_motion`; `language` solo `es` |
-| `advanced` | `logLevel`, `texBinOverride`, `opencodeExeOverride` | log level se persiste; el filtro de `tracing` aún no lo lee. Los overrides **no se usan** y no se exponen |
+| `ui` | `theme`, `accent`, `language`, `dock`, `window`, `reducedMotion` | tema/acento/dock/ventana sí; `system` consulta el SO al aplicar y sigue cambios con `observe_window_appearance`; `reducedMotion` se proyecta en `App::set_reduce_motion`; `language` solo `es` |
+| `advanced` | `logLevel`, `texBinOverride`, `opencodeExeOverride` | log level se persiste; el filtro de `tracing` aún no lo lee. Los overrides **sí se aplican** al arrancar (`resolve_tex_bin`/`resolve_opencode_exe`), pero se editan a mano en `settings.json` |
 
 ## Ajustes UI actuales (P2-UI-1)
 

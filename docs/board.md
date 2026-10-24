@@ -124,7 +124,7 @@ calidad, plan y changelog). `AGENTS.md` obliga a leerlo y mantenerlo; skill
 | P2-AI-1 Conexión IA/opencode | ✅ DONE | `ai_setup.rs`; live pendiente de `agent/opencode.exe` |
 | P2-AI-2 Persistir modelo/agente del chat | ✅ DONE | `ChatPanelEvent::SelectionChanged` + `validate` de permisos |
 | P2-UI-3 Ventana/menús/cierre seguro | ✅ DONE | `ui.window`, `AppMenuBar`, cierre seguro; capturas |
-| P2-INST-2 Recuperación del motor | ⏳ PLANNED | O-2 |
+| P2-INST-2 Recuperación del motor | 🟡 PARCIAL | probe real + overrides + diálogo; falta bootstrap guiado |
 | P2-UI-4 Bienvenida/pulido/retirada demo | 🟡 DOING | demo retirada; estado vacío con acciones |
 | P2-QA-1 Gate G2.5 | ⏳ PLANNED | tras O-1 |
 

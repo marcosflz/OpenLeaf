@@ -64,7 +64,7 @@ verified: true
 
 ### P2-INST-2 — Recuperación y diagnóstico del motor en la app
 
-- **Estado:** ⏳ PLANNED
+- **Estado:** 🟡 PARCIAL (probe, overrides y diálogo hechos; falta bootstrap guiado y banner)
 - **Territorio:** `crates/ui/**`, `app/**`, `installer/**`, `xtask/**`
 - **Depende de:** P2-INST-1.
 - **Entrega:**
@@ -76,11 +76,14 @@ verified: true
   - Status bar/toolbar: motor clickable → Ajustes → Compilación.
 - **Aceptación:** en una copia sin `tex/`, la app ofrece la acción y, tras el bootstrap,
   compila sin reiniciar; el estado pasa de warning a ok.
-- **Evidencia:** test de UI del banner + captura + compilación real.
+- **Evidencia:** `shots/p2-engine-probe.png` (TeX Live 4.88 real) y
+  `shots/p2-engine-dialog.png` (versión/SyncTeX/biber/ruta + Reintentar/Abrir carpeta/
+  Ajustes). Tests de `resolve_tex_bin`/`resolve_opencode_exe`. Pendiente: botón que lance el
+  bootstrap desde la app y banner persistente.
 
 ### P2-UI-1 — Ajustes 2.0
 
-- **Estado:** ✅ DONE (2026-10-24; capturas `shots/p2-settings-*.png`, 104 tests UI)
+- **Estado:** ✅ DONE (2026-10-24; capturas `shots/p2-settings-*.png`, 106 tests UI)
 - **Territorio:** `crates/ui/src/settings_ui.rs` (o `settings_window.rs`), `crates/ui/locales/es.yml`
 - **Depende de:** nada (solo API existente de `AppRoot::apply_settings`).
 - **Entrega:**
@@ -100,7 +103,7 @@ verified: true
     caliente desde `AppRoot::apply_settings`.
 - **Aceptación:** test de datos que aplica el borrador y recarga `settings.json`
   (equivalente a `AppRoot::apply_settings`); capturas dark/light de la superficie.
-- **Evidencia:** `cargo test -p lsx-ui` (104 tests en la última ejecución); capturas
+- **Evidencia:** `cargo test -p lsx-ui` (106 tests en la última ejecución); capturas
   `%TEMP%\lsx-ui-final-captures\settings-{dark,light}.png`;
   `cargo clippy -p lsx-ui --all-targets -- -D warnings` ✅;
   `docs/kb/architecture/03-configuracion.md`.

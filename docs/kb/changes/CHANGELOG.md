@@ -17,6 +17,23 @@ verified: true
 > Formato: `CHG-NNNN`. Estado: `planned` · `doing` · `done` · `reverted`.
 > El estado vivo de las tareas está en `PLAN-0.2.md`; aquí queda la historia.
 
+## CHG-0009 — Probe real del motor, overrides y diálogo de diagnóstico
+
+- **Fecha:** 2026-10-24
+- **Tarea:** `P2-INST-2` (parcial)
+- **Estado:** doing
+- **Territorio:** `crates/ui/src/{app,toolbar,settings_ui}.rs`,
+  `docs/kb/architecture/{03-configuracion,06-ui-shell}.md`
+- **Qué cambia:** al arrancar se ejecuta `TexLiveEngine::probe` en background y la toolbar
+  muestra `TeX Live 4.88` (no solo la presencia del `.exe`); el indicador abre un diálogo con
+  versión, SyncTeX, biber, ruta y acciones. `advanced.texBinOverride` y
+  `advanced.opencodeExeOverride` se aplican de verdad. Tests de resolución de rutas.
+- **Por qué:** el usuario necesitaba saber si el motor funciona, no solo si existe el archivo.
+- **Evidencia:** `shots/p2-engine-probe.png`, `shots/p2-engine-dialog.png`; 106 tests UI;
+  `cargo fmt/clippy/test` verdes.
+- **Pendiente:** lanzar el bootstrap desde la app (hoy remite al instalador/Ajustes) y banner
+  persistente cuando no hay motor.
+
 ## CHG-0008 — Tema `system` reactivo
 
 - **Fecha:** 2026-10-24
@@ -26,7 +43,7 @@ verified: true
 - **Qué cambia:** `AppRoot` observa `observe_window_appearance` y reaplica el tema cuando el
   SO cambia de claro/oscuro y `ui.theme = system`.
 - **Por qué:** el agente de UI detectó que solo se sincronizaba al aplicar Ajustes.
-- **Evidencia:** `cargo test -p lsx-ui` (104), clippy workspace y `kb check` verdes.
+- **Evidencia:** `cargo test -p lsx-ui` (106), clippy workspace y `kb check` verdes.
 
 ## CHG-0007 — Validación automática del OKF
 
@@ -49,7 +66,7 @@ verified: true
   una paleta oscura fija que rompía el tema claro); se retira el botón “Probar permiso” y
   su comando de la paleta.
 - **Por qué:** el tema claro dejaba el chat oscuro; la demo era un resto de MVP visible.
-- **Evidencia:** capturas `shots/p2-settings-light-05.png`; 104 tests UI; clippy UI verde.
+- **Evidencia:** capturas `shots/p2-settings-light-05.png`; 106 tests UI; clippy UI verde.
 
 ## CHG-0005 — Ventana, menús, cierre seguro y persistencia del picker
 
@@ -103,7 +120,7 @@ verified: true
 - **Evidencia:**
   - `cargo check --workspace` ✅
   - `cargo clippy --workspace --all-targets -- -D warnings` ✅
-  - `cargo test --workspace` ✅ (incluye 104 tests de `lsx-ui`) y
+  - `cargo test --workspace` ✅ (incluye 106 tests de `lsx-ui`) y
     `cargo test -p lsx-ui` ✅ (parsers de opencode, validación de rangos, persistencia
     de `settings.json` y test GPUI de `system`).
   - `cargo fmt --check` ✅ y `rustfmt --check` de los archivos del stream ✅.

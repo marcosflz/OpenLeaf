@@ -13,10 +13,7 @@ use gpui_kit::component::{
     button::{Button, ButtonCustomVariant, ButtonVariants as _},
     menu::{PopupMenu, PopupMenuItem},
 };
-use gpui_kit::{
-    App, ClickEvent, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Styled as _,
-    Window, div, px,
-};
+use gpui_kit::{App, ClickEvent, Hsla, IntoElement, Styled as _, Window, div, px};
 
 use crate::layout::SlotKind;
 use crate::project::ProjectInfo;
@@ -76,24 +73,34 @@ pub fn slot_toggle(
     )
 }
 
-/// Indicador de estado del motor LaTeX (icono + texto; el detalle va en el
-/// bloque de motor de la status bar).
-pub fn engine_indicator(cx: &App, label: &str, available: bool) -> impl IntoElement {
-    let (icon, color) = if available {
-        (IconName::CircleCheck, cx.theme().success)
+/// Indicador de estado del motor LaTeX (icono + texto) que abre el detalle al
+/// pulsarlo. El tooltip explica el estado y la acción.
+pub fn engine_indicator(
+    cx: &App,
+    label: &str,
+    available: bool,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Button {
+    let (icon, color, hint) = if available {
+        (
+            IconName::CircleCheck,
+            cx.theme().success,
+            "Motor LaTeX disponible. Pulsa para ver la versión y la ruta.",
+        )
     } else {
-        (IconName::TriangleAlert, cx.theme().warning)
+        (
+            IconName::TriangleAlert,
+            cx.theme().warning,
+            "No hay un motor LaTeX utilizable. Pulsa para reinstalar o revisar la ruta.",
+        )
     };
-    div()
-        .id("toolbar-engine")
-        .flex()
-        .items_center()
-        .gap_1()
-        .px_2()
-        .text_xs()
-        .text_color(cx.theme().muted_foreground)
-        .child(Icon::new(icon).size(px(12.)).text_color(color))
-        .child(label.to_owned())
+    Button::new("toolbar-engine")
+        .ghost()
+        .small()
+        .icon(Icon::new(icon).size(px(12.)).text_color(color))
+        .label(label.to_owned())
+        .tooltip(hint)
+        .on_click(on_click)
 }
 
 /// Punto de color para el estado de la IA (dot de la status bar).
