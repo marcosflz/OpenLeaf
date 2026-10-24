@@ -1,8 +1,8 @@
 //! Status bar del shell (M1-A2).
 //!
 //! Renderiza un [`StatusModel`] puro con la barra del kit. Cada bloque es un
-//! botón fantasma sin acción (aspecto de texto) con tooltip y etiqueta
-//! accesible: todos los estados son visibles y explicables sin abrir nada.
+//! botón fantasma (aspecto de texto) con tooltip y etiqueta accesible; motor e
+//! IA abren su diálogo/Ajustes, el resto es informativo.
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
@@ -10,7 +10,7 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     status_bar::StatusBar,
 };
-use gpui_kit::{App, IntoElement, ParentElement as _, Styled as _, div, px};
+use gpui_kit::{App, ClickEvent, IntoElement, ParentElement as _, Styled as _, Window, div, px};
 use rust_i18n::t;
 
 use crate::status::{AiState, CompileState, StatusModel};
@@ -111,8 +111,14 @@ fn ai_block(model: &StatusModel, cx: &App) -> Button {
         .text_size(px(11.))
 }
 
-/// Pinta la status bar completa.
-pub fn render(model: &StatusModel, cx: &App) -> impl IntoElement {
+/// Pinta la status bar completa. El motor y la IA son accionables: abren su
+/// diálogo/Ajustes respectivos.
+pub fn render(
+    model: &StatusModel,
+    cx: &App,
+    on_engine: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    on_ai: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
     let project = model
         .project
         .clone()
@@ -166,22 +172,25 @@ pub fn render(model: &StatusModel, cx: &App) -> impl IntoElement {
             model.page_text(),
             t!("ui.app.status.page_tooltip").to_string(),
         ))
-        .child(marked(
-            "status-engine",
-            if model.engine_available {
-                IconName::CircleCheck
-            } else {
-                IconName::TriangleAlert
-            },
-            if model.engine_available {
-                cx.theme().success
-            } else {
-                cx.theme().warning
-            },
-            engine_text,
-            t!("ui.app.status.engine_tooltip").to_string(),
-        ))
-        .child(ai_block(model, cx));
+        .child(
+            marked(
+                "status-engine",
+                if model.engine_available {
+                    IconName::CircleCheck
+                } else {
+                    IconName::TriangleAlert
+                },
+                if model.engine_available {
+                    cx.theme().success
+                } else {
+                    cx.theme().warning
+                },
+                engine_text,
+                t!("ui.app.status.engine_tooltip").to_string(),
+            )
+            .on_click(on_engine),
+        )
+        .child(ai_block(model, cx).on_click(on_ai));
 
     StatusBar::new().left(left).right(right)
 }

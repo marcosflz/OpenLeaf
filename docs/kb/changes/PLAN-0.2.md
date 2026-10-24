@@ -186,7 +186,7 @@ verified: true
 
 ### P2-UI-4 — Primer arranque, bienvenida y retirada de demos
 
-- **Estado:** 🟡 DOING (demo retirada y estado vacío con acciones; falta bienvenida completa)
+- **Estado:** 🟡 DOING (demo retirada, estado vacío con acciones y status bar accionable; falta bienvenida completa)
 - **Territorio:** `crates/ui/src/{app,panels/placeholder,new_project,toolbar,status_bar,palette}.rs`
 - **Depende de:** P2-INST-2, P2-UI-1/3.
 - **Entrega:**

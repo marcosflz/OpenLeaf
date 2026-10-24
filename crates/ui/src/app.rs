@@ -2552,7 +2552,12 @@ impl Render for AppRoot {
             )
             .child(self.render_toolbar(window, cx))
             .child(div().flex_1().min_h_0().child(self.dock.clone()))
-            .child(status_bar::render(&self.status_model, cx))
+            .child(status_bar::render(
+                &self.status_model,
+                cx,
+                cx.listener(|this, _, window, cx| this.open_engine_help(window, cx)),
+                cx.listener(|this, _, window, cx| this.open_ai_settings(window, cx)),
+            ))
     }
 }
 

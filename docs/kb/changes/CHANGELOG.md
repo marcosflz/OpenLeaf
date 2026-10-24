@@ -17,6 +17,17 @@ verified: true
 > Formato: `CHG-NNNN`. Estado: `planned` · `doing` · `done` · `reverted`.
 > El estado vivo de las tareas está en `PLAN-0.2.md`; aquí queda la historia.
 
+## CHG-0010 — Status bar accionable
+
+- **Fecha:** 2026-10-24
+- **Tarea:** `P2-UI-4` (parcial)
+- **Estado:** done
+- **Territorio:** `crates/ui/src/{status_bar,app}.rs`
+- **Qué cambia:** el bloque de motor abre el diálogo de diagnóstico y el dot de IA abre
+  Ajustes → IA; el resto de la barra sigue siendo informativo.
+- **Por qué:** el estado no debe ser un callejón sin salida.
+- **Evidencia:** `cargo test -p lsx-ui` (106), clippy UI y capturas de la ola.
+
 ## CHG-0009 — Probe real del motor, overrides y diálogo de diagnóstico
 
 - **Fecha:** 2026-10-24

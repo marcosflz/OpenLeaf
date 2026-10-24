@@ -34,7 +34,9 @@ El indicador de motor de la toolbar es un botón: abre un diálogo con versión,
 biber, ruta y acciones **Reintentar / Abrir carpeta / Abrir Ajustes**. Al arrancar se hace
 un `probe` real en background (`TexLiveEngine::probe`) y la etiqueta pasa de
 “comprobando…” a `TeX Live 4.88` (o al error concreto). `advanced.texBinOverride` y
-`advanced.opencodeExeOverride` se aplican al resolver las rutas.
+`advanced.opencodeExeOverride` se aplican al resolver las rutas. El bloque de motor y el
+dot de IA de la status bar también son accionables (abren el diálogo del motor y Ajustes →
+IA).
 
 ## Layout persistido
 
