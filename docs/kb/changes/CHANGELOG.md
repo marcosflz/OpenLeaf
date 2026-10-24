@@ -17,6 +17,17 @@ verified: true
 > Formato: `CHG-NNNN`. Estado: `planned` · `doing` · `done` · `reverted`.
 > El estado vivo de las tareas está en `PLAN-0.2.md`; aquí queda la historia.
 
+## CHG-0008 — Tema `system` reactivo
+
+- **Fecha:** 2026-10-24
+- **Tarea:** `P2-UI-2`
+- **Estado:** done
+- **Territorio:** `crates/ui/src/app.rs`, `docs/kb/architecture/06-ui-shell.md`
+- **Qué cambia:** `AppRoot` observa `observe_window_appearance` y reaplica el tema cuando el
+  SO cambia de claro/oscuro y `ui.theme = system`.
+- **Por qué:** el agente de UI detectó que solo se sincronizaba al aplicar Ajustes.
+- **Evidencia:** `cargo test -p lsx-ui` (104), clippy workspace y `kb check` verdes.
+
 ## CHG-0007 — Validación automática del OKF
 
 - **Fecha:** 2026-10-24

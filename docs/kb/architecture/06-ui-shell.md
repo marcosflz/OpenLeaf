@@ -54,8 +54,8 @@ StatusBar (compilación · proyecto · Ln/Col · palabras · página · motor ·
 - `theme::apply` parte de `dark`/`light`/`system` y aplica `ui.accent` a `primary`,
   `button_primary`, `ring`, `selection`, `list_active` y `sidebar_accent`.
 - `ui.theme = "system"` usa `Theme::sync_system_appearance(None, cx)`, que consulta
-  `cx.window_appearance()`; si el SO cambia mientras la app está abierta, el shell debe
-  volver a llamar a `theme::apply` (no hay observador propio en `theme.rs`).
+  `cx.window_appearance()`. `AppRoot` observa `observe_window_appearance` y reaplica
+  `theme::apply` si el SO cambia de claro a oscuro con la app abierta.
 - Acento: presets en `theme::ACCENT_PRESETS` (azul, violeta, verde, ámbar, rojo) + hex
   validado con `parse_accent`. Ajustes previsualiza en vivo y Cancelar/Escape restaura.
 - Tema claro: los alphas de `selection`/`list_active`/hover bajan respecto a dark para no

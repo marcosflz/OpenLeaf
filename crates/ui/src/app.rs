@@ -579,6 +579,14 @@ impl AppRoot {
             .push(cx.observe_window_bounds(window, |root, window, cx| {
                 root.on_window_bounds_changed(window, cx);
             }));
+        // `ui.theme = system`: si el SO cambia de claro a oscuro con la app
+        // abierta, reaplicamos el tema (incluido el acento) sin reiniciar.
+        root._window_events
+            .push(cx.observe_window_appearance(window, |root, _window, cx| {
+                if root.settings.ui.theme.eq_ignore_ascii_case("system") {
+                    theme::apply(&root.settings, cx);
+                }
+            }));
         // Hook de QA/visual: abre Ajustes al arrancar sin depender de clics
         // sintéticos. No se usa en producción salvo que se exporte la variable.
         if let Some(open) = std::env::var_os("LSX_QA_OPEN_SETTINGS") {
