@@ -48,10 +48,13 @@ pub fn slot_toggle(
     collapsed: bool,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Button {
-    let icon = if collapsed {
-        IconName::Eye
-    } else {
-        IconName::EyeOff
+    // Icono descriptivo del panel, no un ojo: el estado se comunica con el
+    // tooltip y con `selected` (activo = visible).
+    let icon = match kind {
+        SlotKind::Tree => IconName::FolderTree,
+        SlotKind::Editor => IconName::FileCode,
+        SlotKind::Pdf => IconName::BookOpen,
+        SlotKind::Chat => IconName::Bot,
     };
     let shortcut = match kind {
         SlotKind::Tree => "Ctrl+Alt+1",

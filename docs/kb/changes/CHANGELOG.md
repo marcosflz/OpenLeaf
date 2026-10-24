@@ -17,6 +17,20 @@ verified: true
 > Formato: `CHG-NNNN`. Estado: `planned` · `doing` · `done` · `reverted`.
 > El estado vivo de las tareas está en `PLAN-0.2.md`; aquí queda la historia.
 
+## CHG-0013 — Toggles de panel junto a Compilar e iconos descriptivos
+
+- **Fecha:** 2026-10-24
+- **Tarea:** pulido UI (post-0.2)
+- **Estado:** done
+- **Territorio:** `crates/ui/src/{toolbar,app}.rs`, `crates/ui/src/panels/{pane,tree,placeholder,problems}.rs`
+- **Qué cambia:** se retiran los botones de ojo de las cabeceras de Explorador, Editor, PDF,
+  Chat y Problemas. Los cuatro toggles viven ahora en la toolbar, junto a **Compilar**, con
+  iconos descriptivos: árbol de carpetas, código, libro/PDF y bot IA. El PDF conserva su
+  botón de abrir en visor externo.
+- **Por qué:** las cabeceras quedaban cargadas con controles duplicados y los ojos no
+  identificaban el panel.
+- **Evidencia:** `shots/p2-panel-icons.png`; `cargo test -p lsx-ui` (106) y clippy UI verdes.
+
 ## CHG-0012 — Makefile y release local 0.2.0
 
 - **Fecha:** 2026-10-24

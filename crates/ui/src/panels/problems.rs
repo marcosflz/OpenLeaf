@@ -467,24 +467,6 @@ impl ProblemsPanel {
         .on_click(cx.listener(move |this, _, _window, cx| this.toggle_severity(severity, cx)))
     }
 
-    fn collapse_button(&self, cx: &Context<Self>) -> Button {
-        let icon = if self.visible {
-            gpui_kit::component::IconName::EyeOff
-        } else {
-            gpui_kit::component::IconName::Eye
-        };
-        Button::new("problems-collapse")
-            .icon(icon)
-            .xsmall()
-            .tab_stop(false)
-            .tooltip(if self.visible {
-                "Colapsar «Problemas»"
-            } else {
-                "Mostrar «Problemas»"
-            })
-            .on_click(cx.listener(|this, _, _window, cx| this.toggle_visible(cx)))
-    }
-
     fn render_toolbar(&self, cx: &Context<Self>) -> impl IntoElement + use<> {
         let (errors, warnings, infos) = self.model.total_counts();
         h_flex()
@@ -726,9 +708,9 @@ impl DockPanel for ProblemsPanel {
     fn toolbar_buttons(
         &mut self,
         _window: &mut Window,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
     ) -> Option<Vec<Button>> {
-        Some(vec![self.collapse_button(cx)])
+        None
     }
 }
 

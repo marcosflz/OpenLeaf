@@ -5,10 +5,8 @@
 //! [`Pane`]: el contrato pequeño del shell (visibilidad + activación) que
 //! evita duplicar el chrome entre hojas.
 
-use gpui_kit::assets::IconName;
 use gpui_kit::component::{
-    ActiveTheme as _, Selectable as _, Sizable as _,
-    button::{Button, ButtonVariants as _},
+    ActiveTheme as _,
     dock::{BasePanel, DockArea, Panel as DockPanel},
 };
 use gpui_kit::{
@@ -126,17 +124,6 @@ pub trait Pane:
     /// Estado de chrome (mutable).
     fn pane_state_mut(&mut self) -> &mut PaneState;
 
-    /// Invierte la visibilidad por acción del usuario y avisa al shell.
-    fn toggle_visible_by_user(&mut self, cx: &mut Context<Self>) {
-        let next = !self.pane_state().is_visible();
-        self.pane_state_mut().set_visible(next, cx);
-        let kind = self.pane_state().kind();
-        cx.emit(PaneEvent::VisibilityChanged {
-            kind,
-            visible: next,
-        });
-    }
-
     /// El usuario ha hecho clic dentro de la hoja: le damos el foco y la
     /// marcamos como panel activo (lo usa el focus mode `Ctrl+Alt+M`).
     ///
@@ -146,29 +133,6 @@ pub trait Pane:
         let kind = self.pane_state().kind();
         self.pane_state().focus_if_outside(window, cx);
         cx.emit(PaneEvent::Activated(kind));
-    }
-
-    /// Botón de ojo del toolbar del panel.
-    fn collapse_button(&self, cx: &Context<Self>) -> Button {
-        let kind = self.pane_state().kind();
-        let visible = self.pane_state().is_visible();
-        let icon = if visible {
-            IconName::EyeOff
-        } else {
-            IconName::Eye
-        };
-        let tooltip: SharedString =
-            rust_i18n::t!("ui.app.toolbar.toggle_slot", name = kind.title())
-                .to_string()
-                .into();
-        Button::new(SharedString::from(format!("pane-collapse-{}", kind.id())))
-            .icon(icon)
-            .ghost()
-            .xsmall()
-            .tab_stop(false)
-            .selected(!visible)
-            .tooltip(tooltip)
-            .on_click(cx.listener(|this, _, _window, cx| this.toggle_visible_by_user(cx)))
     }
 
     /// Implementación compartida de `BasePanel::visible`.

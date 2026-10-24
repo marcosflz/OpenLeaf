@@ -1939,8 +1939,9 @@ impl AppRoot {
                 self.status_model.engine_available,
                 cx.listener(|this, _, window, cx| this.open_engine_help(window, cx)),
             ))
-            .child(div().flex_1())
+            .child(toolbar::separator(cx))
             .child(toggles)
+            .child(div().flex_1())
             .child(toolbar::separator(cx))
             .child(toolbar::icon_button(
                 cx,
@@ -2052,7 +2053,16 @@ impl gpui_kit::component::dock::Panel for PdfSlot {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<Vec<Button>> {
-        Some(vec![self.collapse_button(cx)])
+        Some(vec![
+            Button::new("slot-pdf-external")
+                .icon(IconName::ExternalLink)
+                .xsmall()
+                .tab_stop(false)
+                .tooltip("Abrir en visor externo")
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.pdf.update(cx, |panel, _| panel.open_external());
+                })),
+        ])
     }
 }
 
@@ -2144,9 +2154,9 @@ impl gpui_kit::component::dock::Panel for ChatSlot {
     fn toolbar_buttons(
         &mut self,
         _window: &mut Window,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
     ) -> Option<Vec<Button>> {
-        Some(vec![self.collapse_button(cx)])
+        None
     }
 }
 
@@ -2238,9 +2248,9 @@ impl gpui_kit::component::dock::Panel for EditorSlot {
     fn toolbar_buttons(
         &mut self,
         _window: &mut Window,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
     ) -> Option<Vec<Button>> {
-        Some(vec![self.collapse_button(cx)])
+        None
     }
 }
 

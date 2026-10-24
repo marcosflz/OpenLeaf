@@ -1134,9 +1134,9 @@ impl DockPanel for TreePanel {
     fn toolbar_buttons(
         &mut self,
         _window: &mut Window,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
     ) -> Option<Vec<Button>> {
-        Some(vec![self.collapse_button(cx)])
+        None
     }
 }
 

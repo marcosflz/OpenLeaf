@@ -100,9 +100,9 @@ impl gpui_kit::component::dock::Panel for PlaceholderPanel {
     fn toolbar_buttons(
         &mut self,
         _window: &mut Window,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
     ) -> Option<Vec<gpui_kit::component::button::Button>> {
-        Some(vec![self.collapse_button(cx)])
+        None
     }
 }
 

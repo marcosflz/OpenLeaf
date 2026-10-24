@@ -21,7 +21,7 @@ verified: true
 
 ```
 TitleBar (controles del SO + proyecto)
-Toolbar  (proyecto · compilar · motor · toggles · sync · focus · ajustes · palette)
+Toolbar  (proyecto · compilar · motor · toggles de panel · sync · focus · ajustes · palette)
 DockArea (split horizontal de 4 hojas)
   ├─ Tree   (árbol + dock inferior PROBLEMAS | SALIDA | SÍMBOLOS)
   ├─ Editor (pestañas + find/replace + diagnósticos)
@@ -30,8 +30,10 @@ DockArea (split horizontal de 4 hojas)
 StatusBar (compilación · proyecto · Ln/Col · palabras · página · motor · IA)
 ```
 
-El indicador de motor de la toolbar es un botón: abre un diálogo con versión, SyncTeX,
-biber, ruta y acciones **Reintentar / Abrir carpeta / Abrir Ajustes**. Al arrancar se hace
+Las cabeceras de los paneles no tienen botón de ocultar: los cuatro toggles están en la
+toolbar, junto a **Compilar**, con iconos de árbol, código, libro/PDF y bot IA. El
+indicador de motor es un botón: abre un diálogo con versión, SyncTeX, biber, ruta y
+acciones **Reintentar / Abrir carpeta / Abrir Ajustes**. Al arrancar se hace
 un `probe` real en background (`TexLiveEngine::probe`) y la etiqueta pasa de
 “comprobando…” a `TeX Live 4.88` (o al error concreto). `advanced.texBinOverride` y
 `advanced.opencodeExeOverride` se aplican al resolver las rutas. El bloque de motor y el
