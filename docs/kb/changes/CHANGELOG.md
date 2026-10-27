@@ -2,7 +2,7 @@
 id: kb/changes/changelog
 title: Changelog incremental de OpenLeaf
 status: stable
-updated: 2026-10-24
+updated: 2026-10-27
 source:
   - docs/kb/changes/PLAN-0.2.md
   - git log
@@ -16,6 +16,20 @@ verified: true
 > Registro incremental de cambios con **porqué**, **territorio** y **evidencia**.
 > Formato: `CHG-NNNN`. Estado: `planned` · `doing` · `done` · `reverted`.
 > El estado vivo de las tareas está en `PLAN-0.2.md`; aquí queda la historia.
+
+## CHG-0014 — Capturas de producto en el README
+
+- **Fecha:** 2026-10-27
+- **Tarea:** documentación (README)
+- **Estado:** done
+- **Territorio:** `README.md`, `docs/img/`
+- **Qué cambia:** el README abre con la app real (explorador, editor, PDF y chat con
+  opencode) y añade una segunda captura del panel de problemas tras un error de
+  compilación. `docs/img/README.md` documenta la reproducción con
+  `scripts/capture-window.ps1`.
+- **Por qué:** el README solo tenía texto; una captura comunica el producto en segundos.
+- **Evidencia:** `docs/img/hero-dark.png`, `docs/img/problems.png`; ambas generadas desde
+  fixtures (`cv-sidebar` y `broken-undefined`), sin datos personales.
 
 ## CHG-0013 — Toggles de panel junto a Compilar e iconos descriptivos
 
