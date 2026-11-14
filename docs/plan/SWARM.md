@@ -112,7 +112,7 @@ Instalación: `npx skills add longbridge/gpui-kit` **o** copiar las carpetas a `
 | `lsx-editor-ts` | Cómo registrar `tree-sitter-latex`; ubicación de queries; mapeo capturas→estilos; marcadores de diagnóstico; APIs del editor del kit descubiertas en S2 (con snippets) | B |
 | `lsx-latex-engine` | Rutas exactas (`tex\bin\windows\...`); comandos latexmk/synctex/tlmgr completos con flags; contrato LogParser + fixtures; flujo auto-install; reglas job-object/timeout | D |
 | `lsx-pdf-hayro` | Uso de hayro (abrir, render página→RGBA); convención de coordenadas con ejemplos numéricos; patrón de subida a `RenderImage`; política de caché; cómo medir con criterion | C |
-| `lsx-opencode-api` | Cómo levantar `serve` local; tabla de endpoints; **nombres exactos de eventos SSE** (de fixtures); flujo completo de permisos; env vars; política de restart; reproductor de fixtures (`xtask chat-replay`) | E |
+| `lsx-agent-sidecar` | Agente LaTeX sobre nas-adk: protocolo NDJSON, herramientas, permisos con diff, revert, proveedores, empaquetado y pruebas sin tokens (sustituye a `lsx-opencode-api`, ADR-001) | E |
 | `lsx-quality-gates` | Comandos exactos (§5); cómo correr UI tests; cuándo actualizar snapshots `insta`; presupuestos de rendimiento; plantilla de evidencia | Todos |
 | `lsx-ai-fix-flow` | Plantillas de prompt ("Arreglar errores"), definición del agente `latex-fix`, flujo E2E con permisos y watcher; cómo probarlo sin gastar tokens reales (mock) | E, QA |
 | `lsx-dist-portable` (M3) | `xtask dist`, layout del zip, checks de primer arranque, Inno | Docs agent |

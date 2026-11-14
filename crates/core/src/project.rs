@@ -3,8 +3,8 @@
 //!
 //! Vive en `lsx-core` (INTERFACES §2): no necesita UI y es la fuente única de
 //! la heurística de `main.tex`, de la lista de recientes (límite 10, dedupe)
-//! y del andamiaje de proyectos nuevos (`main.tex` + `AGENTS.md` +
-//! `.opencode/agents/latex-fix.md`). El crate `lsx-ui` lo envuelve en un
+//! y del andamiaje de proyectos nuevos (`main.tex` + `AGENTS.md`, las notas
+//! que el agente LaTeX lee en cada turno). El crate `lsx-ui` lo envuelve en un
 //! adaptador fino ([`crate::project`](../lsx_ui) en la UI).
 //!
 //! Las plantillas y el andamiaje van **embebidos** (`include_str!` desde
@@ -128,17 +128,14 @@ impl TemplateId {
     }
 }
 
-/// `AGENTS.md` que recibe cada proyecto nuevo (producto, no repo de desarrollo).
+/// `AGENTS.md` que recibe cada proyecto nuevo: notas editables que el agente
+/// LaTeX añade a sus instrucciones (estilo, idioma, motor, convenciones).
 pub const PROJECT_AGENTS_MD: &str = include_str!("../../../assets/templates/project/AGENTS.md");
-
-/// Agente `latex-fix` que recibe cada proyecto nuevo (copia del de `workspace/`).
-pub const LATEX_FIX_AGENT_MD: &str =
-    include_str!("../../../assets/templates/project/opencode/agents/latex-fix.md");
 
 /// Crea un proyecto en `parent/<name>` con la plantilla indicada.
 ///
-/// Deja `main.tex`, `AGENTS.md` y `.opencode/agents/latex-fix.md`. Si algo
-/// falla a mitad, borra la carpeta creada para no dejar restos a medias.
+/// Deja `main.tex` y `AGENTS.md`. Si algo falla a mitad, borra la carpeta
+/// creada para no dejar restos a medias.
 pub fn create_project(
     parent: &Path,
     name: &str,
@@ -391,14 +388,10 @@ pub fn find_main_tex(root: &Path) -> Option<PathBuf> {
     tex_files.into_iter().next()
 }
 
-/// Escribe `main.tex`, `AGENTS.md` y el agente `latex-fix` del andamiaje.
+/// Escribe `main.tex` y `AGENTS.md` del andamiaje.
 fn scaffold(dir: &Path, template: TemplateId) -> Result<(), ProjectError> {
     write_file(&dir.join("main.tex"), template.main_tex())?;
     write_file(&dir.join("AGENTS.md"), PROJECT_AGENTS_MD)?;
-    write_file(
-        &dir.join(".opencode").join("agents").join("latex-fix.md"),
-        LATEX_FIX_AGENT_MD,
-    )?;
     Ok(())
 }
 
@@ -640,12 +633,7 @@ mod tests {
             assert_eq!(main, template.main_tex());
             assert!(main.contains("\\documentclass"));
             assert!(root.join("AGENTS.md").is_file());
-            assert!(
-                root.join(".opencode")
-                    .join("agents")
-                    .join("latex-fix.md")
-                    .is_file()
-            );
+            assert!(!root.join(".opencode").exists(), "ya no se usa opencode");
         }
     }
 

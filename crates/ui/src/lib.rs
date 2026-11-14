@@ -17,9 +17,6 @@
 //! lsx_ui::theme::apply(&settings, cx);
 //! // … open_window con lsx_ui::app::AppRoot
 //! ```
-//!
-//! El módulo [`spike`] conserva la demo M0-S1 (`cargo run -p latex-studio
-//! --bin spike-shell`), que sigue siendo la referencia del dock del kit.
 
 pub mod ai_setup;
 pub mod app;
@@ -30,8 +27,8 @@ pub mod palette;
 pub mod panels;
 pub mod permission;
 pub mod project;
+pub mod quick_open;
 pub mod settings_ui;
-pub mod spike;
 pub mod status;
 pub mod status_bar;
 pub mod theme;

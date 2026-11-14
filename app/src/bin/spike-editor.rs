@@ -125,6 +125,7 @@ impl SpikeEditor {
             autosave: AutosaveConfig::default(),
             backup_interval_secs: 5,
             restore_session: true,
+            ..EditorPanelConfig::default()
         };
         let panel = cx.new(|cx| EditorPanel::with_config(&root, &config_dir, config, window, cx));
 

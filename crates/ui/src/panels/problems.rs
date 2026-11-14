@@ -21,12 +21,14 @@
 use std::rc::Rc;
 
 use camino::Utf8PathBuf;
+use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     ActiveTheme as _, Selectable as _, Sizable as _,
     button::Button,
     dock::{BasePanel, DockArea, Panel as DockPanel, PanelEvent},
     h_flex,
     input::{Input, InputEvent, InputState},
+    menu::{ContextMenuExt as _, PopupMenuItem},
     tooltip::Tooltip,
     v_flex, v_virtual_list,
 };
@@ -305,8 +307,10 @@ impl ProblemsPanel {
     }
 
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let text_filter =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Filtrar problemas…"));
+        let text_filter = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(rust_i18n::t!("ui.app.text.filtrar_problemas").to_string())
+        });
         let filter_events = cx.subscribe(&text_filter, |this, _input, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
                 let text = this.text_filter.read(cx).value().to_string();
@@ -484,21 +488,21 @@ impl ProblemsPanel {
             )
             .child(self.severity_button(
                 DiagnosticSeverity::Error,
-                "Errores",
+                &rust_i18n::t!("ui.app.text.errores"),
                 errors,
                 cx.theme().danger,
                 cx,
             ))
             .child(self.severity_button(
                 DiagnosticSeverity::Warning,
-                "Avisos",
+                &rust_i18n::t!("ui.app.text.avisos"),
                 warnings,
                 cx.theme().warning,
                 cx,
             ))
             .child(self.severity_button(
                 DiagnosticSeverity::Info,
-                "Info",
+                &rust_i18n::t!("ui.app.text.info"),
                 infos,
                 cx.theme().info,
                 cx,
@@ -518,16 +522,15 @@ impl ProblemsPanel {
 
     fn render_list(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         if self.model.diagnostics().is_empty() {
-            return div()
-                .flex_1()
-                .min_h_0()
-                .child(self.render_empty("Sin problemas por ahora", cx));
+            return div().flex_1().min_h_0().child(
+                self.render_empty(&rust_i18n::t!("ui.app.text.sin_problemas_por_ahora"), cx),
+            );
         }
         if self.model.rows().is_empty() {
-            return div()
-                .flex_1()
-                .min_h_0()
-                .child(self.render_empty("Ningún problema coincide con los filtros", cx));
+            return div().flex_1().min_h_0().child(self.render_empty(
+                &rust_i18n::t!("ui.app.text.ningun_problema_coincide_con_los_filtros"),
+                cx,
+            ));
         }
         let row_sizes = self.row_sizes.clone();
         div().flex_1().min_h_0().child(
@@ -628,6 +631,12 @@ impl ProblemsPanel {
             diagnostic.kind.label(),
             diagnostic.message
         );
+        let weak = cx.weak_entity();
+        let copy_text = match (&diagnostic.file, location.is_empty()) {
+            (Some(file), false) => format!("{file}:{location}: {}", diagnostic.message),
+            (Some(file), true) => format!("{file}: {}", diagnostic.message),
+            (None, _) => diagnostic.message.clone(),
+        };
         let row = h_flex()
             .id(("problems-row", index))
             .h(ROW_HEIGHT)
@@ -667,6 +676,35 @@ impl ProblemsPanel {
             });
         row.tooltip(move |window, cx| {
             Tooltip::new(SharedString::from(tooltip_text.clone())).build(window, cx)
+        })
+        .context_menu(move |menu, _window, _cx| {
+            let open = weak.clone();
+            let copy = copy_text.clone();
+            menu.item(
+                PopupMenuItem::new(rust_i18n::t!("ui.app.text.ir_al_codigo").to_string())
+                    .icon(IconName::ArrowRight)
+                    .disabled(!navigable)
+                    .on_click(move |_, _window, cx| {
+                        let _ = open.update(cx, |this, cx| this.open_row(index, cx));
+                    }),
+            )
+            .item(
+                PopupMenuItem::new(rust_i18n::t!("ui.app.text.copiar").to_string())
+                    .icon(IconName::Copy)
+                    .on_click(move |_, _window, cx| {
+                        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(copy.clone()));
+                    }),
+            )
+            .separator()
+            .item(
+                PopupMenuItem::new(
+                    rust_i18n::t!("ui.app.text.arreglar_errores_con_ia").to_string(),
+                )
+                .icon(IconName::Sparkles)
+                .on_click(|_, window, cx| {
+                    window.dispatch_action(Box::new(crate::app::FixWithAi), cx);
+                }),
+            )
         })
         .into_any_element()
     }

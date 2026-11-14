@@ -31,17 +31,21 @@ use std::time::Duration;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::WindowExt as _;
+use gpui_kit::component::breadcrumb::{Breadcrumb, BreadcrumbItem};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dialog::{DialogDescription, DialogFooter};
 use gpui_kit::component::input::{
-    Editor, EditorState, Input, InputEvent, InputState, Position, Replace as ReplaceAction,
-    Search as SearchAction,
+    self as kit_input, Editor, EditorState, Input, InputEvent, InputState, Position,
+    Replace as ReplaceAction, Search as SearchAction, TabSize,
 };
+use gpui_kit::component::native_menu::NativeMenu;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use lsx_core::fs::{FsEvent, FsService};
+
+use crate::panels::tree::{file_icon, file_icon_color};
 use lsx_editor::backup::{BackupEntry, BackupStore};
 use lsx_editor::diff::{DiffKind, diff_lines};
 use lsx_editor::document::{AutosaveConfig, DocId, DocIdGenerator, DocumentMeta, rel_key};
@@ -60,7 +64,10 @@ gpui_kit::actions!(
         ToggleReplace,
         FindNext,
         FindPrevious,
-        CloseTab
+        CloseTab,
+        ToggleComment,
+        AskAiAboutSelection,
+        SaveAll
     ]
 );
 
@@ -91,10 +98,25 @@ pub enum EditorPanelEvent {
     NewProjectRequested,
     /// El usuario pulsó «Abrir carpeta» en el estado vacío.
     OpenProjectRequested,
+    /// Bienvenida: abrir un proyecto reciente.
+    OpenRecentRequested { root: PathBuf },
+    /// Bienvenida: «Abrir archivo» (Ctrl+P).
+    QuickOpenRequested,
+    /// Bienvenida: «Configurar IA».
+    ConfigureAiRequested,
+    /// «Preguntar a la IA»: adjunta la selección (o la línea) al chat.
+    AskAi {
+        /// Ruta relativa con `/`.
+        path: String,
+        /// Línea 1-based del cursor.
+        line: u32,
+        /// Texto seleccionado (vacío si no había selección).
+        selection: String,
+    },
 }
 
 /// Configuración de montaje del panel.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct EditorPanelConfig {
     /// Autosave (off por defecto, M1-B5).
     pub autosave: AutosaveConfig,
@@ -102,6 +124,41 @@ pub struct EditorPanelConfig {
     pub backup_interval_secs: u64,
     /// Restaurar pestañas/cursores guardados al montar (M1-B1).
     pub restore_session: bool,
+    /// Tipografía, tabulación y ajuste de línea (`editor.*` de settings).
+    pub prefs: EditorPrefs,
+}
+
+/// Preferencias visuales del editor (`editor.fontFamily/fontSize/tabSize/softWrap`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct EditorPrefs {
+    /// Familia monoespaciada; `None` = la mono del tema.
+    pub font_family: Option<SharedString>,
+    /// Tamaño en px lógicos.
+    pub font_size: f32,
+    /// Espacios por tabulación.
+    pub tab_size: usize,
+    /// Ajuste de línea.
+    pub soft_wrap: bool,
+}
+
+impl Default for EditorPrefs {
+    fn default() -> Self {
+        Self {
+            font_family: None,
+            font_size: 14.,
+            tab_size: 2,
+            soft_wrap: false,
+        }
+    }
+}
+
+impl EditorPrefs {
+    fn tab(&self) -> TabSize {
+        TabSize {
+            tab_size: self.tab_size.clamp(1, 16),
+            hard_tabs: false,
+        }
+    }
 }
 
 impl Default for EditorPanelConfig {
@@ -110,6 +167,7 @@ impl Default for EditorPanelConfig {
             autosave: AutosaveConfig::default(),
             backup_interval_secs: 5,
             restore_session: true,
+            prefs: EditorPrefs::default(),
         }
     }
 }
@@ -144,12 +202,18 @@ pub struct EditorPanel {
     find_case_sensitive: bool,
     status: SharedString,
     autosave: AutosaveConfig,
+    prefs: EditorPrefs,
     backup_interval_secs: u64,
     seconds: u64,
     session_dirty: bool,
     /// Última señal de cursor emitida (`ruta`, línea, columna) para no repetir
     /// `CursorMoved` en cada `notify` (el cursor parpadea y notifica a menudo).
     cursor_sig: Option<(String, u32, u32)>,
+    /// Sección LaTeX que contiene el cursor (breadcrumb), recalculada al
+    /// cambiar de línea.
+    breadcrumb_section: Option<String>,
+    /// Proyectos recientes (nombre, raíz) para la bienvenida.
+    recent: Vec<(String, PathBuf)>,
     /// Recuperaciones pendientes de proponer (se abre el modal tras el frame).
     pending_recovery: Vec<(DocId, BackupEntry)>,
     focus_handle: FocusHandle,
@@ -194,8 +258,14 @@ impl EditorPanel {
         let config_dir = config_dir.into();
         let fs = Rc::new(FsService::new(&root));
 
-        let find_query = cx.new(|cx| InputState::new(window, cx).placeholder("Buscar…"));
-        let find_replace = cx.new(|cx| InputState::new(window, cx).placeholder("Reemplazar por…"));
+        let find_query = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(rust_i18n::t!("ui.app.text.buscar_2").to_string())
+        });
+        let find_replace = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(rust_i18n::t!("ui.app.text.reemplazar_por").to_string())
+        });
 
         let mut subs = Vec::new();
         subs.push(cx.subscribe_in(
@@ -232,6 +302,8 @@ impl EditorPanel {
             KeyBinding::new("f3", FindNext, None),
             KeyBinding::new("shift-f3", FindPrevious, None),
             KeyBinding::new("ctrl-w", CloseTab, None),
+            KeyBinding::new("ctrl-/", ToggleComment, None),
+            KeyBinding::new("ctrl-alt-s", SaveAll, None),
         ]);
 
         let mut this = Self {
@@ -249,10 +321,13 @@ impl EditorPanel {
             find_case_sensitive: false,
             status: "listo".into(),
             autosave: config.autosave,
+            prefs: config.prefs.clone(),
             backup_interval_secs: config.backup_interval_secs.max(1),
             seconds: 0,
             session_dirty: false,
             cursor_sig: None,
+            breadcrumb_section: None,
+            recent: Vec::new(),
             pending_recovery: Vec::new(),
             focus_handle: cx.focus_handle(),
             _subs: subs,
@@ -296,10 +371,13 @@ impl EditorPanel {
         };
 
         let content = text_file.text;
+        let language = language_for(&rel);
         let editor = cx.new(|cx| {
             EditorState::new(window, cx)
-                .language(latex_language::LATEX_LANGUAGE_NAME)
+                .language(language)
                 .line_number(true)
+                .soft_wrap(self.prefs.soft_wrap)
+                .tab_size(self.prefs.tab())
                 .default_value(content.clone())
         });
         let doc_id = self.ids.next_id();
@@ -363,6 +441,43 @@ impl EditorPanel {
             Some(ix) => self.save_doc(ix, cx),
             None => false,
         }
+    }
+
+    /// Proyectos recientes que lista la pantalla de bienvenida.
+    pub fn set_recent_projects(&mut self, recent: Vec<(String, PathBuf)>, cx: &mut Context<Self>) {
+        self.recent = recent;
+        cx.notify();
+    }
+
+    /// Comenta o descomenta (`% `) las líneas que toca la selección (Ctrl+/).
+    pub fn toggle_comment(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ix) = self.active else {
+            return;
+        };
+        self.docs[ix].editor.update(cx, |state, cx| {
+            let text = state.value().to_string();
+            let range = state.selected_range();
+            let (start, end) = line_span(&text, range.start, range.end);
+            let toggled = toggle_comment_lines(&text[start..end]);
+            state.set_selected_range(start..end, cx);
+            state.replace(toggled, window, cx);
+        });
+    }
+
+    /// «Preguntar a la IA»: emite la selección (o la línea del cursor) al shell.
+    pub fn ask_ai_about_selection(&mut self, cx: &mut Context<Self>) {
+        let Some(ix) = self.active else {
+            return;
+        };
+        let state = self.docs[ix].editor.read(cx);
+        let selection = state.selected_value().to_string();
+        let line = state.cursor_position().line + 1;
+        let path = rel_key(&self.docs[ix].meta.rel);
+        cx.emit(EditorPanelEvent::AskAi {
+            path,
+            line,
+            selection,
+        });
     }
 
     /// Guarda un documento abierto por ruta relativa.
@@ -469,6 +584,26 @@ impl EditorPanel {
         count
     }
 
+    /// Aplica tipografía, tabulación y ajuste de línea a todas las pestañas.
+    pub fn set_preferences(
+        &mut self,
+        prefs: EditorPrefs,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.prefs == prefs {
+            return;
+        }
+        for doc in &self.docs {
+            doc.editor.update(cx, |editor, cx| {
+                editor.set_soft_wrap(prefs.soft_wrap, window, cx);
+                editor.set_tab_size(prefs.tab(), cx);
+            });
+        }
+        self.prefs = prefs;
+        cx.notify();
+    }
+
     /// Configura el autosave (M1-B5; el intervalo viene de settings).
     pub fn set_autosave(&mut self, config: AutosaveConfig, cx: &mut Context<Self>) {
         self.autosave = config;
@@ -562,7 +697,18 @@ impl EditorPanel {
         if self.cursor_sig.as_ref() == Some(&sig) {
             return;
         }
+        let line_changed = self
+            .cursor_sig
+            .as_ref()
+            .is_none_or(|(old_path, old_line, _)| *old_path != path || *old_line != line);
         self.cursor_sig = Some(sig);
+        if line_changed {
+            self.breadcrumb_section = self.active.and_then(|ix| {
+                let text = self.docs[ix].editor.read(cx).value();
+                section_at(&text, line)
+            });
+            cx.notify();
+        }
         cx.emit(EditorPanelEvent::CursorMoved { path, line, column });
     }
 
@@ -842,14 +988,15 @@ impl EditorPanel {
             dialog
                 .title(format!("«{name}» cambió en disco"))
                 .width(px(520.))
-                .child(DialogDescription::new().child(
-                    "El archivo tiene cambios fuera del editor y tu pestaña también está sin guardar. ¿Qué quieres hacer?",
-                ))
+                .child(
+                    DialogDescription::new()
+                        .child(rust_i18n::t!("ui.app.text.external_conflict").to_string()),
+                )
                 .footer(
                     DialogFooter::new()
                         .child(
                             Button::new("conflict-diff")
-                                .label("Ver diff")
+                                .label(rust_i18n::t!("ui.app.text.ver_diff").to_string())
                                 .outline()
                                 .on_click(move |_, window, cx| {
                                     window.close_dialog(cx);
@@ -866,7 +1013,7 @@ impl EditorPanel {
                         )
                         .child(
                             Button::new("conflict-reload")
-                                .label("Recargar")
+                                .label(rust_i18n::t!("ui.app.text.recargar").to_string())
                                 .on_click(move |_, window, cx| {
                                     window.close_dialog(cx);
                                     let _ = weak_reload.update(cx, |panel, cx| {
@@ -882,7 +1029,7 @@ impl EditorPanel {
                         )
                         .child(
                             Button::new("conflict-overwrite")
-                                .label("Sobrescribir")
+                                .label(rust_i18n::t!("ui.app.text.sobrescribir").to_string())
                                 .primary()
                                 .on_click(move |_, window, cx| {
                                     window.close_dialog(cx);
@@ -960,27 +1107,29 @@ impl EditorPanel {
                     DialogFooter::new()
                         .child(
                             Button::new("diff-close")
-                                .label("Cerrar")
+                                .label(rust_i18n::t!("ui.app.text.cerrar").to_string())
                                 .outline()
                                 .on_click(|_, window, cx| window.close_dialog(cx)),
                         )
-                        .child(Button::new("diff-reload").label("Recargar").on_click(
-                            move |_, window, cx| {
-                                window.close_dialog(cx);
-                                let _ = weak_reload.update(cx, |panel, cx| {
-                                    panel.reload_doc(
-                                        doc_id,
-                                        disk_reload.clone(),
-                                        rel_reload.clone(),
-                                        window,
-                                        cx,
-                                    );
-                                });
-                            },
-                        ))
+                        .child(
+                            Button::new("diff-reload")
+                                .label(rust_i18n::t!("ui.app.text.recargar").to_string())
+                                .on_click(move |_, window, cx| {
+                                    window.close_dialog(cx);
+                                    let _ = weak_reload.update(cx, |panel, cx| {
+                                        panel.reload_doc(
+                                            doc_id,
+                                            disk_reload.clone(),
+                                            rel_reload.clone(),
+                                            window,
+                                            cx,
+                                        );
+                                    });
+                                }),
+                        )
                         .child(
                             Button::new("diff-overwrite")
-                                .label("Sobrescribir")
+                                .label(rust_i18n::t!("ui.app.text.sobrescribir").to_string())
                                 .primary()
                                 .on_click(move |_, window, cx| {
                                     window.close_dialog(cx);
@@ -1105,17 +1254,18 @@ impl EditorPanel {
                 })
                 .collect();
             dialog
-                .title("Cambios sin guardar encontrados")
+                .title(rust_i18n::t!("ui.app.text.cambios_sin_guardar_encontrados").to_string())
                 .width(px(560.))
-                .child(DialogDescription::new().child(
-                    "La aplicación se cerró (o murió) con cambios sin guardar. ¿Quieres recuperar la copia más reciente?",
-                ))
+                .child(
+                    DialogDescription::new()
+                        .child(rust_i18n::t!("ui.app.text.recovery_body").to_string()),
+                )
                 .child(v_flex().gap_1().children(rows))
                 .footer(
                     DialogFooter::new()
                         .child(
                             Button::new("recovery-discard")
-                                .label("Descartar")
+                                .label(rust_i18n::t!("ui.app.text.descartar").to_string())
                                 .outline()
                                 .on_click(move |_, window, cx| {
                                     window.close_dialog(cx);
@@ -1126,7 +1276,7 @@ impl EditorPanel {
                         )
                         .child(
                             Button::new("recovery-accept")
-                                .label("Recuperar")
+                                .label(rust_i18n::t!("ui.app.text.recuperar").to_string())
                                 .primary()
                                 .on_click(move |_, window, cx| {
                                     window.close_dialog(cx);
@@ -1225,19 +1375,22 @@ impl EditorPanel {
                 .title(format!("«{name}» tiene cambios sin guardar"))
                 .width(px(500.))
                 .child(
-                    DialogDescription::new().child("¿Quieres guardar antes de cerrar la pestaña?"),
+                    DialogDescription::new().child(
+                        rust_i18n::t!("ui.app.text.quieres_guardar_antes_de_cerrar_la_pestana")
+                            .to_string(),
+                    ),
                 )
                 .footer(
                     DialogFooter::new()
                         .child(
                             Button::new("close-cancel")
-                                .label("Cancelar")
+                                .label(rust_i18n::t!("ui.app.text.cancelar").to_string())
                                 .outline()
                                 .on_click(|_, window, cx| window.close_dialog(cx)),
                         )
                         .child(
                             Button::new("close-discard")
-                                .label("Descartar")
+                                .label(rust_i18n::t!("ui.app.text.descartar").to_string())
                                 .danger()
                                 .on_click(move |_, window, cx| {
                                     window.close_dialog(cx);
@@ -1250,7 +1403,7 @@ impl EditorPanel {
                         )
                         .child(
                             Button::new("close-save")
-                                .label("Guardar y cerrar")
+                                .label(rust_i18n::t!("ui.app.text.guardar_y_cerrar").to_string())
                                 .primary()
                                 .on_click(move |_, window, cx| {
                                     window.close_dialog(cx);
@@ -1503,7 +1656,31 @@ impl EditorPanel {
                 };
                 let close_weak = cx.weak_entity();
                 let close_id = doc.meta.id;
+                let icon = file_icon(&doc.meta.display_name());
+                let icon_color = file_icon_color(icon, cx);
+                // Pestaña activa al estilo VS Code: barra de acento arriba.
+                // En taffy el `absolute` se ancla al padre directo: el prefijo ocupa
+                // todo el alto de la pestaña (32 px en el kit) y la barra se estira de
+                // sobra; el `overflow_hidden` de la pestaña la recorta a su ancho.
+                let prefix = div()
+                    .relative()
+                    .h(px(TAB_HEIGHT))
+                    .flex()
+                    .items_center()
+                    .child(Icon::new(icon).size(px(14.)).text_color(icon_color))
+                    .when(ix == active, |this| {
+                        this.child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .left(px(-48.))
+                                .w(px(800.))
+                                .h(px(2.))
+                                .bg(cx.theme().primary),
+                        )
+                    });
                 Tab::new()
+                    .prefix(prefix)
                     .label(label)
                     .aria_label(doc.meta.display_path())
                     .on_click(cx.listener(move |this, _, window, cx| this.activate(ix, window, cx)))
@@ -1512,7 +1689,7 @@ impl EditorPanel {
                             .icon(IconName::X)
                             .xsmall()
                             .ghost()
-                            .tooltip("Cerrar pestaña (Ctrl+W)")
+                            .tooltip(rust_i18n::t!("ui.app.text.cerrar_pestana_ctrl_w").to_string())
                             .on_click(move |_, window, cx| {
                                 let _ = close_weak.update(cx, |panel, cx| {
                                     if let Some(ix) = panel.index_by_id(close_id) {
@@ -1530,6 +1707,30 @@ impl EditorPanel {
             .max_width(px(220.))
             .children(tabs)
             .into_any_element()
+    }
+
+    /// Breadcrumb `carpeta › archivo › sección` bajo las pestañas (VS Code).
+    fn render_breadcrumb(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let doc = self.active.and_then(|ix| self.docs.get(ix))?;
+        let path = rel_key(&doc.meta.rel);
+        let mut items: Vec<BreadcrumbItem> = path
+            .split('/')
+            .map(|part| BreadcrumbItem::new(part.to_owned()))
+            .collect();
+        if let Some(section) = &self.breadcrumb_section {
+            items.push(BreadcrumbItem::new(section.clone()));
+        }
+        Some(
+            h_flex()
+                .flex_none()
+                .h(px(22.))
+                .px_3()
+                .items_center()
+                .text_size(px(12.))
+                .text_color(cx.theme().muted_foreground)
+                .child(Breadcrumb::new().children(items))
+                .into_any_element(),
+        )
     }
 
     fn render_find_bar(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -1566,7 +1767,7 @@ impl EditorPanel {
                             .icon(IconName::ChevronUp)
                             .small()
                             .ghost()
-                            .tooltip("Anterior (Shift+F3)")
+                            .tooltip(rust_i18n::t!("ui.app.text.anterior_shift_f3").to_string())
                             .on_click(cx.listener(|this, _, _window, cx| this.find_previous(cx))),
                     )
                     .child(
@@ -1574,7 +1775,7 @@ impl EditorPanel {
                             .icon(IconName::ChevronDown)
                             .small()
                             .ghost()
-                            .tooltip("Siguiente (F3)")
+                            .tooltip(rust_i18n::t!("ui.app.text.siguiente_f3").to_string())
                             .on_click(cx.listener(|this, _, _window, cx| this.find_next(cx))),
                     )
                     .child(
@@ -1582,7 +1783,10 @@ impl EditorPanel {
                             .icon(IconName::CaseSensitive)
                             .small()
                             .when(!case_active, |button| button.ghost())
-                            .tooltip("Distinguir mayúsculas y minúsculas")
+                            .tooltip(
+                                rust_i18n::t!("ui.app.text.distinguir_mayusculas_y_minusculas")
+                                    .to_string(),
+                            )
                             .on_click(cx.listener(|this, _, _window, cx| {
                                 this.find_case_sensitive = !this.find_case_sensitive;
                                 this.apply_find_to_active(cx);
@@ -1594,7 +1798,9 @@ impl EditorPanel {
                             .icon(IconName::Replace)
                             .small()
                             .when(!replace_mode, |button| button.ghost())
-                            .tooltip("Mostrar reemplazo (Ctrl+H)")
+                            .tooltip(
+                                rust_i18n::t!("ui.app.text.mostrar_reemplazo_ctrl_h").to_string(),
+                            )
                             .on_click(cx.listener(|this, _, _window, cx| {
                                 this.find_replace_mode = !this.find_replace_mode;
                                 cx.notify();
@@ -1606,7 +1812,7 @@ impl EditorPanel {
                             .icon(IconName::X)
                             .small()
                             .ghost()
-                            .tooltip("Cerrar la búsqueda")
+                            .tooltip(rust_i18n::t!("ui.app.text.cerrar_la_busqueda").to_string())
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.close_find(window, cx)),
                             ),
@@ -1626,7 +1832,7 @@ impl EditorPanel {
                         )
                         .child(
                             Button::new("find-replace-one")
-                                .label("Reemplazar")
+                                .label(rust_i18n::t!("ui.app.text.reemplazar").to_string())
                                 .small()
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.find_replace_current(window, cx)
@@ -1634,7 +1840,7 @@ impl EditorPanel {
                         )
                         .child(
                             Button::new("find-replace-all")
-                                .label("Reemplazar todo")
+                                .label(rust_i18n::t!("ui.app.text.reemplazar_todo").to_string())
                                 .small()
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.find_replace_all(window, cx)
@@ -1646,81 +1852,306 @@ impl EditorPanel {
         bar.into_any_element()
     }
 
+    /// Pantalla de bienvenida (sin documentos abiertos), al estilo de VS Code:
+    /// acciones para empezar, proyectos recientes y atajos clave.
     fn render_empty(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let actions = h_flex()
-            .gap_2()
-            .pt_2()
-            .child(
-                Button::new("editor-empty-new-project")
-                    .primary()
-                    .small()
-                    .label("Nuevo proyecto")
-                    .on_click(cx.listener(|_this, _, _window, cx| {
-                        cx.emit(EditorPanelEvent::NewProjectRequested);
-                    })),
-            )
-            .child(
-                Button::new("editor-empty-open-project")
-                    .outline()
-                    .small()
-                    .label("Abrir carpeta")
-                    .on_click(cx.listener(|_this, _, _window, cx| {
-                        cx.emit(EditorPanelEvent::OpenProjectRequested);
-                    })),
+        let muted = cx.theme().muted_foreground;
+        let link = cx.theme().primary;
+        let section_title = |text: &str| {
+            div()
+                .text_size(px(13.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .pb_1()
+                .child(text.to_owned())
+        };
+        let action = |id: &'static str, icon: IconName, label: &str, event: EditorPanelEvent| {
+            h_flex()
+                .id(id)
+                .gap_2()
+                .items_center()
+                .py(px(3.))
+                .text_size(px(13.))
+                .text_color(link)
+                .cursor_pointer()
+                .hover(|style| style.underline())
+                .child(Icon::new(icon).size(px(15.)))
+                .child(label.to_owned())
+                .on_click(cx.listener(move |_this, _, _window, cx| cx.emit(event.clone())))
+        };
+
+        let start = v_flex()
+            .gap(px(2.))
+            .child(section_title(&rust_i18n::t!("ui.app.text.empezar")))
+            .child(action(
+                "welcome-new-project",
+                IconName::FolderPlus,
+                &rust_i18n::t!("ui.app.text.nuevo_proyecto"),
+                EditorPanelEvent::NewProjectRequested,
+            ))
+            .child(action(
+                "welcome-open-folder",
+                IconName::FolderOpen,
+                &rust_i18n::t!("ui.app.text.abrir_carpeta_2"),
+                EditorPanelEvent::OpenProjectRequested,
+            ))
+            .child(action(
+                "welcome-quick-open",
+                IconName::Search,
+                &rust_i18n::t!("ui.app.text.abrir_archivo"),
+                EditorPanelEvent::QuickOpenRequested,
+            ))
+            .child(action(
+                "welcome-configure-ai",
+                IconName::Bot,
+                &rust_i18n::t!("ui.app.text.configurar_el_asistente_ia"),
+                EditorPanelEvent::ConfigureAiRequested,
+            ));
+
+        let mut recent = v_flex()
+            .gap(px(2.))
+            .child(section_title(&rust_i18n::t!("ui.app.text.recientes")));
+        if self.recent.is_empty() {
+            recent =
+                recent.child(div().text_size(px(13.)).text_color(muted).child(
+                    rust_i18n::t!("ui.app.text.aun_no_hay_proyectos_recientes").to_string(),
+                ));
+        }
+        for (ix, (name, root)) in self.recent.iter().take(6).enumerate() {
+            let event = EditorPanelEvent::OpenRecentRequested { root: root.clone() };
+            recent = recent.child(
+                h_flex()
+                    .id(("welcome-recent", ix))
+                    .gap_2()
+                    .items_baseline()
+                    .py(px(3.))
+                    .text_size(px(13.))
+                    .cursor_pointer()
+                    .child(
+                        div()
+                            .text_color(link)
+                            .hover(|style| style.underline())
+                            .child(name.clone()),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(12.))
+                            .text_color(muted)
+                            .child(root.display().to_string()),
+                    )
+                    .on_click(cx.listener(move |_this, _, _window, cx| cx.emit(event.clone()))),
             );
+        }
+
+        let hint = |keys: &str, label: &str| {
+            h_flex()
+                .gap_2()
+                .justify_between()
+                .w(px(300.))
+                .text_size(px(12.))
+                .child(div().text_color(muted).child(label.to_owned()))
+                .child(
+                    div()
+                        .font_family(cx.theme().mono_font_family.clone())
+                        .child(keys.to_owned()),
+                )
+        };
 
         v_flex()
+            .id("editor-welcome")
             .size_full()
+            .overflow_y_scroll()
             .items_center()
             .justify_center()
-            .gap_2()
-            .text_color(cx.theme().muted_foreground)
-            .child(Icon::new(IconName::FileText).size(px(28.)))
-            .child(div().text_sm().child("Ningún documento abierto"))
+            .gap_6()
+            .p_6()
+            .text_color(cx.theme().foreground)
             .child(
-                div()
-                    .text_xs()
-                    .child("Abre un archivo del explorador o crea un proyecto para empezar."),
+                v_flex()
+                    .items_center()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_size(px(26.))
+                            .font_weight(FontWeight::LIGHT)
+                            .child("LaTeX Studio"),
+                    )
+                    .child(
+                        div().text_size(px(13.)).text_color(muted).child(
+                            rust_i18n::t!(
+                                "ui.app.text.escribe_compila_y_corrige_latex_con_ayuda_de_la"
+                            )
+                            .to_string(),
+                        ),
+                    ),
             )
-            .child(actions)
+            .child(
+                h_flex()
+                    .gap_12()
+                    .items_start()
+                    .child(start)
+                    .child(div().max_w(px(420.)).child(recent)),
+            )
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child(hint(
+                        "Ctrl+P",
+                        &rust_i18n::t!("ui.app.text.abrir_archivo_2"),
+                    ))
+                    .child(hint(
+                        "Ctrl+Shift+P",
+                        &rust_i18n::t!("ui.app.text.paleta_de_comandos"),
+                    ))
+                    .child(hint("Ctrl+B", &rust_i18n::t!("ui.app.text.compilar")))
+                    .child(hint("F1", &rust_i18n::t!("ui.app.text.todos_los_atajos"))),
+            )
             .into_any_element()
     }
+}
 
-    fn render_status(&self, cx: &App) -> AnyElement {
-        let (path, position, dirty) = match self.active.and_then(|ix| self.docs.get(ix)) {
-            Some(doc) => {
-                let position = doc.editor.read(cx).cursor_position();
-                (doc.meta.display_path(), position, doc.meta.is_dirty())
+/// Alto de la pestaña del kit (`TabVariant::Tab`, tamaño medio).
+const TAB_HEIGHT: f32 = 32.;
+
+/// Menú contextual del editor (nativo del SO). Las acciones viajan por el
+/// árbol de foco: las de edición las atiende el editor del kit y las de
+/// SyncTeX/IA el shell.
+fn editor_context_menu(menu: NativeMenu) -> NativeMenu {
+    menu.menu(
+        rust_i18n::t!("ui.app.text.cortar").to_string(),
+        Box::new(kit_input::Cut),
+    )
+    .menu(
+        rust_i18n::t!("ui.app.text.copiar").to_string(),
+        Box::new(kit_input::Copy),
+    )
+    .menu(
+        rust_i18n::t!("ui.app.text.pegar").to_string(),
+        Box::new(kit_input::Paste),
+    )
+    .menu(
+        rust_i18n::t!("ui.app.text.seleccionar_todo").to_string(),
+        Box::new(kit_input::SelectAll),
+    )
+    .separator()
+    .menu(
+        rust_i18n::t!("ui.app.text.comentar_o_descomentar_lineas").to_string(),
+        Box::new(ToggleComment),
+    )
+    .separator()
+    .menu(
+        rust_i18n::t!("ui.app.text.ir_a_esta_linea_en_el_pdf").to_string(),
+        Box::new(crate::app::SyncForward),
+    )
+    .menu(
+        rust_i18n::t!("ui.app.text.preguntar_a_la_ia_sobre_la_seleccion").to_string(),
+        Box::new(AskAiAboutSelection),
+    )
+    .menu(
+        rust_i18n::t!("ui.app.text.arreglar_errores_con_ia").to_string(),
+        Box::new(crate::app::FixWithAi),
+    )
+}
+
+/// Rango de bytes `[inicio de la primera línea, fin de la última línea]` que
+/// cubre la selección `start..end` (el salto final no se incluye).
+fn line_span(text: &str, start: usize, end: usize) -> (usize, usize) {
+    let start = start.min(text.len());
+    let mut end = end.min(text.len()).max(start);
+    // Una selección que acaba justo al principio de una línea no la incluye.
+    if end > start && text[..end].ends_with('\n') {
+        end -= 1;
+    }
+    let line_start = text[..start].rfind('\n').map_or(0, |ix| ix + 1);
+    let line_end = text[end..].find('\n').map_or(text.len(), |ix| end + ix);
+    let line_end = if line_end > line_start && text[..line_end].ends_with('\r') {
+        line_end - 1
+    } else {
+        line_end
+    };
+    (line_start, line_end.max(line_start))
+}
+
+/// Comenta (`% `) o descomenta un bloque de líneas. Si todas las líneas con
+/// contenido ya están comentadas, las descomenta; si no, comenta todas.
+fn toggle_comment_lines(block: &str) -> String {
+    let lines: Vec<&str> = block.split('\n').collect();
+    let has_content = |line: &&&str| !line.trim().is_empty();
+    let all_commented = lines
+        .iter()
+        .filter(has_content)
+        .all(|line| line.trim_start().starts_with('%'));
+    let indent = lines
+        .iter()
+        .filter(has_content)
+        .map(|line| line.len() - line.trim_start().len())
+        .min()
+        .unwrap_or(0);
+    lines
+        .iter()
+        .map(|line| {
+            if line.trim().is_empty() {
+                (*line).to_owned()
+            } else if all_commented {
+                let lead = line.len() - line.trim_start().len();
+                let rest = &line[lead + 1..];
+                let rest = rest.strip_prefix(' ').unwrap_or(rest);
+                format!("{}{rest}", &line[..lead])
+            } else {
+                format!("{}% {}", &line[..indent], &line[indent..])
             }
-            None => ("—".into(), Position::new(0, 0), false),
-        };
-        h_flex()
-            .flex_none()
-            .h(px(22.))
-            .px_2()
-            .gap_3()
-            .items_center()
-            .text_size(px(12.))
-            .border_t_1()
-            .border_color(cx.theme().border)
-            .text_color(cx.theme().muted_foreground)
-            .child(div().flex_1().min_w_0().truncate().child(path))
-            .child(div().child(format!(
-                "Ln {}, Col {}",
-                position.line + 1,
-                position.character + 1
-            )))
-            .child(
-                div()
-                    .when(dirty, |this| this.text_color(cx.theme().yellow))
-                    .child(if dirty {
-                        "● sin guardar"
-                    } else {
-                        "sin cambios"
-                    }),
-            )
-            .child(div().max_w(px(420.)).truncate().child(self.status.clone()))
-            .into_any_element()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Título de la sección (`\chapter`, `\section`, `\subsection`…) que contiene
+/// la línea `line` (1-based), para el breadcrumb.
+fn section_at(text: &str, line: u32) -> Option<String> {
+    const COMMANDS: [&str; 5] = [
+        "\\chapter",
+        "\\section",
+        "\\subsection",
+        "\\subsubsection",
+        "\\paragraph",
+    ];
+    let mut found = None;
+    for raw in text.split('\n').take(line as usize) {
+        let line = raw.trim_start();
+        if line.starts_with('%') {
+            continue;
+        }
+        for command in COMMANDS {
+            let Some(rest) = line.strip_prefix(command) else {
+                continue;
+            };
+            let rest = rest.strip_prefix('*').unwrap_or(rest);
+            let Some(rest) = rest.strip_prefix('{') else {
+                continue;
+            };
+            let title: String = rest.chars().take_while(|c| *c != '}').collect();
+            if !title.trim().is_empty() {
+                found = Some(title.trim().to_owned());
+            }
+            break;
+        }
+    }
+    found
+}
+
+/// Lenguaje del editor según la extensión: LaTeX para la familia TeX
+/// (`.tex`, `.sty`, `.cls`…) y texto plano para el resto (`.bib`, `.txt`…).
+fn language_for(rel: &Path) -> &'static str {
+    let ext = rel
+        .extension()
+        .map(|ext| ext.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    match ext.as_str() {
+        "tex" | "ltx" | "sty" | "cls" | "dtx" | "ins" | "def" | "cfg" | "clo" | "bbx" | "cbx"
+        | "lbx" => latex_language::LATEX_LANGUAGE_NAME,
+        "json" => "json",
+        _ => "text",
     }
 }
 
@@ -1746,6 +2177,7 @@ impl Render for EditorPanel {
             Some(self.render_tabs(cx))
         };
         let find_bar = self.find_open.then(|| self.render_find_bar(cx));
+        let breadcrumb = self.render_breadcrumb(cx);
         let body = match self.active.and_then(|ix| self.docs.get(ix)) {
             Some(doc) => div()
                 .id("editor-body")
@@ -1753,7 +2185,16 @@ impl Render for EditorPanel {
                 .min_h_0()
                 .w_full()
                 .overflow_hidden()
-                .child(Editor::new(&doc.editor).bordered(false).h(relative(1.0)))
+                .text_size(px(self.prefs.font_size))
+                .when_some(self.prefs.font_family.clone(), |this, family| {
+                    this.font_family(family)
+                })
+                .child(
+                    Editor::new(&doc.editor)
+                        .bordered(false)
+                        .h(relative(1.0))
+                        .context_menu(|menu, _window, _cx| editor_context_menu(menu)),
+                )
                 .into_any_element(),
             None => self.render_empty(cx),
         };
@@ -1777,6 +2218,15 @@ impl Render for EditorPanel {
             .on_action(cx.listener(|this, _: &CloseTab, window, cx| {
                 this.close_active(window, cx);
             }))
+            .on_action(cx.listener(|this, _: &ToggleComment, window, cx| {
+                this.toggle_comment(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &AskAiAboutSelection, _window, cx| {
+                this.ask_ai_about_selection(cx);
+            }))
+            .on_action(cx.listener(|this, _: &SaveAll, _window, cx| {
+                this.save_all(cx);
+            }))
             .on_action(cx.listener(|this, _: &SearchAction, window, cx| {
                 this.toggle_find(false, window, cx);
             }))
@@ -1784,9 +2234,9 @@ impl Render for EditorPanel {
                 this.toggle_find(true, window, cx);
             }))
             .when_some(tabs, |this, tabs| this.child(tabs))
+            .when_some(breadcrumb, |this, crumbs| this.child(crumbs))
             .when_some(find_bar, |this, find| this.child(find))
             .child(body)
-            .child(self.render_status(cx))
     }
 }
 
@@ -1802,9 +2252,46 @@ mod tests {
         ParentElement as _, Render, Styled as _, TestAppContext, VisualTestContext, Window, px,
     };
 
-    use super::EditorPanel;
+    use super::{EditorPanel, language_for, line_span, section_at, toggle_comment_lines};
     use crate::layout::SlotKind;
     use crate::panels::pane::{PaneState, pane_container};
+
+    #[test]
+    fn toggle_comment_comments_and_uncomments_blocks() {
+        // Como VS Code: el `%` va en la sangría mínima del bloque.
+        assert_eq!(toggle_comment_lines("a\n  b"), "% a\n%   b");
+        assert_eq!(toggle_comment_lines("  x\n  y"), "  % x\n  % y");
+        assert_eq!(toggle_comment_lines("% a\n\n  % b"), "a\n\n  b");
+        // Mezcla: comenta todo.
+        assert_eq!(toggle_comment_lines("% a\nb"), "% % a\n% b");
+    }
+
+    #[test]
+    fn line_span_covers_whole_lines() {
+        let text = "uno\ndos\ntres";
+        assert_eq!(line_span(text, 5, 5), (4, 7));
+        assert_eq!(line_span(text, 1, 6), (0, 7));
+        // Selección que acaba al inicio de la línea siguiente.
+        assert_eq!(line_span(text, 0, 4), (0, 3));
+        assert_eq!(line_span("a\r\nb", 0, 0), (0, 1));
+    }
+
+    #[test]
+    fn section_at_finds_the_enclosing_heading() {
+        let text = "\\documentclass{x}\n\\section{Intro}\ntexto\n% \\section{No}\n\\subsection*{Datos}\nmás";
+        assert_eq!(section_at(text, 1), None);
+        assert_eq!(section_at(text, 3).as_deref(), Some("Intro"));
+        assert_eq!(section_at(text, 4).as_deref(), Some("Intro"));
+        assert_eq!(section_at(text, 6).as_deref(), Some("Datos"));
+    }
+
+    #[test]
+    fn language_follows_the_extension() {
+        assert_eq!(language_for(Path::new("main.tex")), "latex");
+        assert_eq!(language_for(Path::new("estilo/Mio.STY")), "latex");
+        assert_eq!(language_for(Path::new("refs.bib")), "text");
+        assert_eq!(language_for(Path::new("notas.txt")), "text");
+    }
 
     /// Chrome mínimo de una hoja del shell (igual que `EditorSlot`, M1-A2).
     struct Host {

@@ -6,7 +6,7 @@ Resumen de las dos rutas: **CI** (recomendada para el instalador ligero) y **loc
 ## Atajos con `make` (Windows)
 
 ```powershell
-make agent        # descarga agent/opencode.exe v1.18.30 si falta
+make agent        # monta agent/ (Python 3.12 embebido + nas-adk 0.3.0 + lsx_agent); requiere uv
 make release      # build release + dist + Setup.exe + SHA-256
 make publish      # crea la release v0.2.0 en GitHub (gh autenticado)
 make gates        # fmt + clippy + tests + OKF
@@ -20,9 +20,9 @@ TinyTeX se descarga al instalar; no hace falta `tex\` en la máquina que compila
 | Pieza | ¿En git? | ¿En el instalador ligero? | Notas |
 |---|---|---|---|
 | `latex-studio.exe` | no (se compila) | sí (~83 MB) | `cargo build --release -p latex-studio` |
-| `agent\opencode.json` | **sí** | sí | config del producto (modelo, permisos, agente) |
-| `agent\opencode.exe` | no (171 MB) | sí | CI lo descarga del release oficial en la versión fijada |
-| `assets\skills\**` | **sí** | sí | skills LaTeX; opencode las ve vía `config/opencode.runtime.json` |
+| `python\lsx_agent\**` | **sí** | sí | código del agente LaTeX (se copia a `agent\lsx_agent`) |
+| `agent\python`, `agent\lib` | no (~74 MB) | sí | `scripts/get-agent.ps1` los monta con versiones y SHA256 fijados |
+| `assets\skills\**` | **sí** | sí | skills LaTeX; el agente las lee con su tool `skill` |
 | `tex\` (motor LaTeX) | no (4,4 GB) | **sí** (TinyTeX, se descarga al instalar) | verificación SHA-256 y `tlmgr`; `/DBundledTex` lo trae offline |
 | `workspace\` (proyectos) | no | **no** | puede tener documentos personales; `xtask dist` lo omite sin `--with-workspace` |
 | `config\settings.json` | no (estado de usuario) | no | se genera en el primer arranque |
@@ -74,8 +74,8 @@ pwsh installer\build.ps1 -SkipBuild             # necesita Inno Setup (ver abajo
 En GitHub: **Actions → installer → Run workflow** (o `git tag v0.1.0 && git push --tags`).
 El workflow `.github/workflows/installer.yml`:
 
-1. descarga `opencode-windows-x64.zip` de la versión de `OPENCODE_VERSION`
-   (por defecto `v1.18.30`) y lo deja en `agent\opencode.exe`;
+1. pasa los tests del agente (`pytest`, `ruff`) y monta `agent\` con
+   `scripts/get-agent.ps1` (Python embebido + nas-adk, versiones y SHA256 fijados);
 2. compila la app en release y monta `dist\latex-ide` con `cargo xtask dist`;
 3. instala Inno Setup 6 con Chocolatey y compila `installer\latex-studio.iss`;
 4. publica como artifact `latex-studio-installer`: el `Setup.exe`, su `.sha256`,
@@ -124,14 +124,14 @@ los assets de la release).
 git clone https://github.com/marcosflz/OpenLeaf.git
 ```
 
-Ojo: el clon no trae `tex\` ni `agent\opencode.exe` (ignorados por git) — para *ejecutar* la app
-ahí hay que copiarlos; para lanzar la Action no hacen falta.
+Ojo: el clon no trae `tex\` ni `agent\python`/`agent\lib` (ignorados por git): para *ejecutar* la app
+ahí hay que copiar `tex\` y ejecutar `make agent` (o `make agent-dev` para desarrollo); para lanzar la Action no hacen falta.
 
 Antes de hacer el repo **público** (si algún día se decide), comprobar que sigue limpio:
 
 ```powershell
 git grep -I -E '(sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}|AIza[0-9A-Za-z_-]{20,}|BEGIN [A-Z ]*PRIVATE KEY)'
-git ls-files config workspace tex agent     # solo debe salir agent/opencode.json y config/.gitkeep
+git ls-files config workspace tex agent     # solo debe salir config/.gitkeep
 ```
 
 Estado verificado el 2026-10-18 en este repositorio: 219 ficheros versionados, sin claves ni

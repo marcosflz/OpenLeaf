@@ -12,7 +12,7 @@
 | Saber qué crate posee un cambio | `architecture/01-crates.md`, `docs/plan/SWARM.md` §2 |
 | Seguir el flujo abrir → editar → compilar → PDF → chat | `architecture/02-flujos.md` |
 | Entender `config/settings.json` y qué campos están cableados | `architecture/03-configuracion.md` |
-| Trabajar con opencode (server, SSE, modelos, auth) | `architecture/04-chat-opencode.md`, skill `lsx-opencode-api` |
+| Trabajar con el agente IA (sidecar, proveedores, permisos) | `architecture/04-chat-agente.md`, `docs/decisions/ADR-001-agente-nas-adk.md` |
 | Tocar el instalador o la distribución | `architecture/05-instalador.md`, `operations/03-release.md`, skill `lsx-dist-portable` |
 | Tocar dock, paneles, toolbar, ajustes o temas | `architecture/06-ui-shell.md`, skills `gpui-kit` y `gpui-kit-design-guides` |
 | Preparar el entorno de desarrollo | `operations/01-desarrollo.md` |
@@ -40,7 +40,7 @@
 | `kb/architecture/crates` | [Crates y ley de dependencias](architecture/01-crates.md) | stable | 2026-10-24 |
 | `kb/architecture/flujos` | [Flujos de extremo a extremo](architecture/02-flujos.md) | stable | 2026-10-24 |
 | `kb/architecture/configuracion` | [Configuración y estado de usuario](architecture/03-configuracion.md) | stable | 2026-10-24 |
-| `kb/architecture/chat-opencode` | [Chat y opencode](architecture/04-chat-opencode.md) | stable | 2026-10-24 |
+| `kb/architecture/chat-agente` | [Chat y agente LaTeX](architecture/04-chat-agente.md) | stable | 2026-11-13 |
 | `kb/architecture/instalador` | [Instalador y distribución](architecture/05-instalador.md) | draft | 2026-10-24 |
 | `kb/architecture/ui-shell` | [Shell, paneles y temas](architecture/06-ui-shell.md) | stable | 2026-10-24 |
 

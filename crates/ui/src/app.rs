@@ -28,6 +28,7 @@ use std::time::{Duration, Instant};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use gpui_kit::assets::IconName;
+use gpui_kit::component::input;
 use gpui_kit::component::{
     ActiveTheme as _, GlobalState, Selectable as _, Sizable as _, TitleBar, WindowExt as _,
     button::{Button, ButtonVariants as _, DropdownButton},
@@ -56,7 +57,10 @@ use crate::notifications;
 use crate::palette::PaletteCommand;
 use crate::panels::bottom::BottomPanel;
 use crate::panels::chat::{ChatPanel, ChatPanelConfig, ChatPanelEvent};
-use crate::panels::editor::{EditorPanel, EditorPanelConfig, EditorPanelEvent};
+use crate::panels::editor::{
+    AskAiAboutSelection, EditorPanel, EditorPanelConfig, EditorPanelEvent, SaveAll, SaveDocument,
+    ToggleComment,
+};
 use crate::panels::pdf::{PdfPanel, PdfPanelEvent, SyncRect, ZoomMode};
 use crate::panels::problems::{ProblemsEvent, ProblemsPanel};
 use crate::panels::symbols::SymbolsPanel;
@@ -94,13 +98,17 @@ gpui_kit::actions!(
         OpenSettingsPane,
         ToggleEditorPane,
         CompileProject,
-        SaveDocument,
         NewProject,
         OpenProject,
         ResetLayout,
         ShowShortcuts,
         ShowAbout,
-        QuitApp
+        QuitApp,
+        FixWithAi,
+        NewChat,
+        ConfigureAi,
+        QuickOpen,
+        CloseActiveTab
     ]
 );
 
@@ -144,13 +152,14 @@ pub fn register_keybindings(cx: &mut App) {
         KeyBinding::new("ctrl-alt-4", ToggleChatPane, None),
         KeyBinding::new("ctrl-alt-m", ToggleFocusMode, None),
         KeyBinding::new("ctrl-alt-j", SyncForward, None),
-        KeyBinding::new("ctrl-p", OpenPalette, None),
+        KeyBinding::new("ctrl-p", QuickOpen, None),
         KeyBinding::new("ctrl-shift-p", OpenPalette, None),
         KeyBinding::new("ctrl-,", OpenSettingsPane, None),
-        KeyBinding::new("ctrl-s", SaveDocument, None),
         KeyBinding::new("ctrl-b", CompileProject, None),
         KeyBinding::new("f1", ShowShortcuts, None),
         KeyBinding::new("ctrl-q", QuitApp, None),
+        KeyBinding::new("ctrl-alt-f", FixWithAi, None),
+        KeyBinding::new("ctrl-alt-n", NewChat, None),
     ]);
 }
 
@@ -195,6 +204,9 @@ pub struct AppRoot {
     pending_inverse: InverseReason,
     focus: FocusHandle,
     palette: Entity<CommandState>,
+    /// Buscador de «Abrir archivo» (Ctrl+P) y la lista que muestra.
+    quick_open: Entity<CommandState>,
+    quick_files: Vec<String>,
     menu_bar: Entity<AppMenuBar>,
     /// Al menos un documento del editor tiene cambios sin guardar.
     editor_dirty: bool,
@@ -226,8 +238,8 @@ impl AppRoot {
         let (status_handle, status_rx) = crate::status::channel();
 
         // Primer arranque de una instalación (M3-3): el instalador ligero no crea
-        // `workspace/` ni `config/`, y sin workspace el `cwd` de `opencode serve`
-        // no existe (el chat se quedaría sin agente).
+        // `workspace/` ni `config/`, y el chat los necesita (proyecto por defecto
+        // y sesiones del agente en `config/agent`).
         if let Err(error) = portable.ensure_layout() {
             warnings.push(ConfigWarning::new(
                 "root.layout",
@@ -262,6 +274,7 @@ impl AppRoot {
                         enabled: settings.editor.autosave.enabled,
                         interval_secs: u64::from(settings.editor.autosave.interval_secs),
                     },
+                    prefs: editor_prefs(&settings),
                     ..EditorPanelConfig::default()
                 },
                 window,
@@ -281,6 +294,7 @@ impl AppRoot {
         // `PdfPanelEvent::InverseJump` para decidir salto vs scroll.
         pdf_panel.update(cx, |panel, cx| {
             panel.set_synctex_exe(tex_bin.join("synctex.exe"));
+            panel.set_dark_pages(settings.pdf.dark_pages, cx);
             let mode = ZoomMode::from_setting(&settings.pdf.zoom_mode);
             panel.set_zoom_mode(mode, cx);
             if mode == ZoomMode::Manual {
@@ -303,8 +317,8 @@ impl AppRoot {
             Some(editor_panel.clone()),
             Some(problems.clone()),
         );
-        if let Some(path) = &settings.advanced.opencode_exe_override {
-            chat_config.exe = resolve_opencode_exe(path);
+        if let Some(path) = &settings.advanced.python_override {
+            chat_config.launch.python = resolve_python(path);
         }
         let chat_panel = cx.new(|cx| ChatPanel::new(window, cx, chat_config));
         let chat_events = chat_panel.clone();
@@ -470,24 +484,10 @@ impl AppRoot {
                 window,
                 |this, _tree, event: &TreePanelEvent, window, cx| match event {
                     TreePanelEvent::OpenFile { rel, kind } => {
-                        let abs = this
-                            .project_root
-                            .clone()
-                            .map(|root| root.join(rel))
-                            .unwrap_or_else(|| rel.clone());
-                        match kind {
-                            TreeOpenKind::Tex => {
-                                this.editor_panel.update(cx, |panel, cx| {
-                                    panel.open_path(abs, None, window, cx);
-                                });
-                            }
-                            TreeOpenKind::Pdf => {
-                                this.last_pdf = Some(abs.clone());
-                                this.pdf_panel.update(cx, |panel, cx| {
-                                    panel.set_document(abs, 1, cx);
-                                });
-                            }
-                        }
+                        this.open_project_file(rel.clone(), *kind, window, cx);
+                    }
+                    TreePanelEvent::SetMainFile { rel } => {
+                        this.set_main_file(rel.clone(), window, cx);
                     }
                     TreePanelEvent::ProjectCreated { project } => {
                         let root = project.root.clone();
@@ -499,6 +499,7 @@ impl AppRoot {
 
         let focus = cx.focus_handle();
         let palette = cx.new(|cx| CommandState::new(window, cx));
+        let quick_open = cx.new(|cx| CommandState::new(window, cx));
 
         // Motor LaTeX: presencia inmediata + probe real asíncrono (`probe_engine`).
         let engine_available = tex_bin.join("latexmk.exe").is_file();
@@ -564,6 +565,8 @@ impl AppRoot {
             pending_inverse: InverseReason::default(),
             focus,
             palette,
+            quick_open,
+            quick_files: Vec::new(),
             menu_bar,
             editor_dirty: false,
             force_close: false,
@@ -668,6 +671,7 @@ impl AppRoot {
         let handle = root.focus.clone();
         window.defer(cx, move |window, cx| handle.focus(window, cx));
         root.probe_engine(cx);
+        root.refresh_recent_projects(cx);
         root
     }
 
@@ -943,24 +947,24 @@ impl AppRoot {
             let weak_discard = weak.clone();
             let weak_save = weak.clone();
             dialog
-                .title("Cerrar LaTeX Studio")
+                .title(rust_i18n::t!("ui.app.text.cerrar_latex_studio").to_string())
                 .width(px(540.))
-                .child(DialogDescription::new().child(format!(
-                    "Hay {dirty} documento(s) con cambios sin guardar. \
-                     Si cierras sin guardar, esos cambios se pierden."
-                )))
+                .child(
+                    DialogDescription::new()
+                        .child(rust_i18n::t!("ui.app.text.close_body", dirty = dirty).to_string()),
+                )
                 .footer(
                     DialogFooter::new()
                         .child(
                             DialogClose::new().child(
                                 Button::new("close-window-cancel")
-                                    .label("Cancelar")
+                                    .label(rust_i18n::t!("ui.app.text.cancelar").to_string())
                                     .outline(),
                             ),
                         )
                         .child(
                             Button::new("close-window-discard")
-                                .label("Descartar y cerrar")
+                                .label(rust_i18n::t!("ui.app.text.descartar_y_cerrar").to_string())
                                 .danger()
                                 .on_click(move |_, window, cx| {
                                     let _ = weak_discard.update(cx, |root, cx| {
@@ -973,7 +977,7 @@ impl AppRoot {
                         )
                         .child(
                             Button::new("close-window-save")
-                                .label("Guardar y cerrar")
+                                .label(rust_i18n::t!("ui.app.text.guardar_y_cerrar").to_string())
                                 .primary()
                                 .on_click(move |_, window, cx| {
                                     let saved = weak_save
@@ -993,7 +997,8 @@ impl AppRoot {
                                         window.remove_window();
                                     } else {
                                         notifications::error(
-                                            "No se pudieron guardar todos los documentos.",
+                                            rust_i18n::t!("ui.app.text.save_all_failed")
+                                                .to_string(),
                                             window,
                                             cx,
                                         );
@@ -1010,38 +1015,103 @@ impl AppRoot {
         self.apply_layout(&layout, window, cx);
         self.sync_app_menus(cx);
         self.schedule_layout_save(cx);
-        notifications::success("Layout restablecido.", window, cx);
+        notifications::success(
+            rust_i18n::t!("ui.app.text.layout_restablecido").to_string(),
+            window,
+            cx,
+        );
+    }
+
+    /// Salir (Ctrl+Q, menú, paleta): mismo camino que la X de la ventana, así que
+    /// con cambios sin guardar se pregunta antes (en 0.2 cerraba sin avisar).
+    fn request_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let dirty = self.editor_panel.read(cx).dirty_count();
+        if dirty == 0 || self.force_close {
+            self.persist_window_state(cx);
+            window.remove_window();
+        } else {
+            self.persist_window_state(cx);
+            self.open_close_dialog(dirty, window, cx);
+        }
+    }
+
+    fn chat_panel(&self, cx: &App) -> Entity<ChatPanel> {
+        self.chat.read(cx).chat.clone()
+    }
+
+    /// «Arreglar errores con IA»: muestra el chat y envía el prompt de reparación.
+    fn fix_with_ai(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.layout.is_collapsed(SlotKind::Chat) {
+            self.toggle_slot(SlotKind::Chat, window, cx);
+        }
+        let chat = self.chat_panel(cx);
+        chat.update(cx, |panel, cx| panel.request_fix(window, cx));
+    }
+
+    /// Conversación nueva con el asistente.
+    fn new_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.layout.is_collapsed(SlotKind::Chat) {
+            self.toggle_slot(SlotKind::Chat, window, cx);
+        }
+        let chat = self.chat_panel(cx);
+        chat.update(cx, |panel, cx| panel.new_session(cx));
     }
 
     fn open_shortcuts(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         window.open_dialog(cx, |dialog, _window, _cx| {
-            let rows = [
-                ("Compilar", "Ctrl+B / botón Compilar"),
-                ("Guardar", "Ctrl+S"),
-                ("Buscar", "Ctrl+F"),
-                ("Reemplazar", "Ctrl+H"),
-                ("Paleta de comandos", "Ctrl+P / Ctrl+Shift+P"),
-                ("Ajustes", "Ctrl+,"),
-                ("Mostrar/ocultar paneles", "Ctrl+Alt+1..4"),
-                ("Modo focus", "Ctrl+Alt+M"),
-                ("SyncTeX forward", "Ctrl+Alt+J"),
-                ("Ayuda", "F1"),
-            ];
+            // Misma tabla que la paleta (más los atajos propios del editor).
+            let mut rows: Vec<(String, String)> = PaletteCommand::ALL
+                .into_iter()
+                .filter_map(|command| {
+                    command
+                        .shortcut()
+                        .map(|keys| (command.label(), keys.to_owned()))
+                })
+                .collect();
+            rows.extend(
+                [
+                    (
+                        &rust_i18n::t!("ui.app.text.paleta_de_comandos"),
+                        "Ctrl+Shift+P",
+                    ),
+                    (
+                        &rust_i18n::t!("ui.app.text.comentar_o_descomentar_lineas"),
+                        "Ctrl+/",
+                    ),
+                    (&rust_i18n::t!("ui.app.text.buscar_en_el_archivo"), "Ctrl+F"),
+                    (&rust_i18n::t!("ui.app.text.reemplazar"), "Ctrl+H"),
+                    (
+                        &rust_i18n::t!("ui.app.text.siguiente_anterior_coincidencia"),
+                        "F3 / Shift+F3",
+                    ),
+                    (
+                        &rust_i18n::t!("ui.app.text.deshacer_rehacer"),
+                        "Ctrl+Z / Ctrl+Y",
+                    ),
+                ]
+                .map(|(label, keys): (&std::borrow::Cow<str>, &str)| {
+                    (label.to_string(), keys.to_owned())
+                }),
+            );
             dialog
-                .title("Atajos de teclado")
+                .title(rust_i18n::t!("ui.app.text.atajos_de_teclado").to_string())
                 .width(px(560.))
-                .child(v_flex().gap_1().children(rows.map(|(action, keys)| {
-                    h_flex()
-                        .justify_between()
-                        .gap_4()
-                        .child(div().text_sm().child(action))
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(_cx.theme().muted_foreground)
-                                .child(keys),
-                        )
-                })))
+                .child(
+                    v_flex()
+                        .gap_1()
+                        .children(rows.into_iter().map(|(action, keys)| {
+                            h_flex()
+                                .justify_between()
+                                .gap_4()
+                                .child(div().text_sm().child(action))
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(_cx.theme().muted_foreground)
+                                        .child(keys),
+                                )
+                        })),
+                )
         });
     }
 
@@ -1124,14 +1194,14 @@ impl AppRoot {
             let weak_settings = weak.clone();
             let folder = tex_bin.clone();
             dialog
-                .title("Motor LaTeX")
+                .title(rust_i18n::t!("ui.app.text.motor_latex").to_string())
                 .width(px(620.))
                 .child(DialogDescription::new().child(detail))
                 .footer(
                     DialogFooter::new()
                         .child(
                             Button::new("engine-open-folder")
-                                .label("Abrir carpeta")
+                                .label(rust_i18n::t!("ui.app.text.abrir_carpeta").to_string())
                                 .outline()
                                 .on_click(move |_, window, cx| {
                                     if let Err(error) = crate::ai_setup::open_folder(&folder) {
@@ -1141,7 +1211,7 @@ impl AppRoot {
                         )
                         .child(
                             Button::new("engine-settings")
-                                .label("Abrir Ajustes")
+                                .label(rust_i18n::t!("ui.app.text.abrir_ajustes").to_string())
                                 .outline()
                                 .on_click(move |_, window, cx| {
                                     window.close_dialog(cx);
@@ -1152,14 +1222,19 @@ impl AppRoot {
                         )
                         .child(
                             Button::new("engine-retry")
-                                .label("Reintentar")
+                                .label(rust_i18n::t!("ui.app.text.reintentar").to_string())
                                 .primary()
                                 .on_click(move |_, window, cx| {
                                     let _ = weak_retry.update(cx, |root, cx| {
                                         root.probe_engine(cx);
                                     });
                                     window.close_dialog(cx);
-                                    notifications::info("Comprobando el motor LaTeX…", window, cx);
+                                    notifications::info(
+                                        rust_i18n::t!("ui.app.text.comprobando_el_motor_latex")
+                                            .to_string(),
+                                        window,
+                                        cx,
+                                    );
                                 }),
                         ),
                 )
@@ -1175,11 +1250,11 @@ impl AppRoot {
     fn open_about(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         window.open_dialog(cx, |dialog, _window, _cx| {
             dialog
-                .title("Acerca de LaTeX Studio")
+                .title(rust_i18n::t!("ui.app.text.acerca_de_latex_studio").to_string())
                 .width(px(520.))
                 .child(DialogDescription::new().child(format!(
                     "LaTeX Studio {} — IDE LaTeX nativo y portable.\n\
-                     Editor, PDF con SyncTeX y chat IA sobre opencode.\n\n\
+                     Editor, PDF con SyncTeX y asistente IA especializado en LaTeX.\n\n\
                      Repositorio: github.com/marcosflz/OpenLeaf",
                     env!("CARGO_PKG_VERSION")
                 )))
@@ -1273,6 +1348,7 @@ impl AppRoot {
                 self.tree
                     .update(cx, |tree, cx| tree.set_project(info.clone(), cx));
                 self.status_model.project = Some(info.name.clone());
+                self.refresh_recent_projects(cx);
                 notifications::info(
                     rust_i18n::t!("ui.app.tree.welcome", name = info.name).to_string(),
                     window,
@@ -1428,6 +1504,25 @@ impl AppRoot {
             }
             EditorPanelEvent::NewProjectRequested => self.open_new_project_dialog(window, cx),
             EditorPanelEvent::OpenProjectRequested => self.open_project_dialog(window, cx),
+            EditorPanelEvent::OpenRecentRequested { root } => {
+                self.open_project(root.clone(), window, cx)
+            }
+            EditorPanelEvent::QuickOpenRequested => self.open_quick_open(window, cx),
+            EditorPanelEvent::ConfigureAiRequested => self.open_ai_settings(window, cx),
+            EditorPanelEvent::AskAi {
+                path,
+                line,
+                selection,
+            } => {
+                if self.layout.is_collapsed(SlotKind::Chat) {
+                    self.toggle_slot(SlotKind::Chat, window, cx);
+                }
+                let chat = self.chat_panel(cx);
+                let (path, line, selection) = (path.clone(), *line, selection.clone());
+                chat.update(cx, |panel, cx| {
+                    panel.ask_about(path, line, selection, window, cx)
+                });
+            }
             _ => {}
         }
         cx.notify();
@@ -1501,6 +1596,16 @@ impl AppRoot {
             PdfPanelEvent::DocumentReady { .. }
             | PdfPanelEvent::DocumentFailed { .. }
             | PdfPanelEvent::ZoomChanged { .. } => {}
+            PdfPanelEvent::DarkPagesChanged(dark) => {
+                self.settings.pdf.dark_pages = *dark;
+                if let Err(err) = self.settings.save(&self.portable) {
+                    notifications::error(
+                        rust_i18n::t!("ui.app.settings.save_error", error = err).to_string(),
+                        window,
+                        cx,
+                    );
+                }
+            }
         }
     }
 
@@ -1735,6 +1840,112 @@ impl AppRoot {
         });
     }
 
+    /// Abre un archivo del proyecto: texto en el editor, PDF en el visor.
+    fn open_project_file(
+        &mut self,
+        rel: PathBuf,
+        kind: TreeOpenKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let abs = self
+            .project_root
+            .clone()
+            .map(|root| root.join(&rel))
+            .unwrap_or(rel);
+        match kind {
+            TreeOpenKind::Tex => {
+                self.editor_panel.update(cx, |panel, cx| {
+                    panel.open_path(abs, None, window, cx);
+                });
+            }
+            TreeOpenKind::Pdf => {
+                self.last_pdf = Some(abs.clone());
+                self.pdf_panel.update(cx, |panel, cx| {
+                    panel.set_document(abs, 1, cx);
+                });
+            }
+        }
+    }
+
+    /// Pasa los proyectos recientes a la pantalla de bienvenida del editor.
+    fn refresh_recent_projects(&mut self, cx: &mut Context<Self>) {
+        let recent: Vec<(String, PathBuf)> = self
+            .project
+            .recent(&self.settings)
+            .into_iter()
+            .map(|project| (project.name, project.root))
+            .collect();
+        self.editor_panel
+            .update(cx, |panel, cx| panel.set_recent_projects(recent, cx));
+    }
+
+    /// Fija `latex.mainFile` (menú contextual del árbol), lo persiste y
+    /// reorienta la compilación hacia ese archivo.
+    fn set_main_file(&mut self, rel: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.settings.latex.main_file = Some(rel.clone());
+        self.latex_settings = bridge_latex_settings(&self.settings.latex);
+        if let (Some(controller), Some(root)) = (&self.compile, &self.project_root)
+            && let Some(root) = Utf8Path::from_path(root)
+        {
+            controller.apply_settings(&self.latex_settings);
+            controller.set_request(self.latex_settings.request(root, rel.as_str()));
+        }
+        match self.settings.save(&self.portable) {
+            Ok(()) => notifications::success(
+                rust_i18n::t!("ui.app.tree.main_set", name = rel).to_string(),
+                window,
+                cx,
+            ),
+            Err(err) => notifications::error(
+                rust_i18n::t!("ui.app.settings.save_error", error = err).to_string(),
+                window,
+                cx,
+            ),
+        }
+        cx.notify();
+    }
+
+    /// «Abrir archivo» (Ctrl+P): buscador de archivos del proyecto. Sin
+    /// proyecto abierto cae en la paleta de comandos.
+    pub fn open_quick_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(root) = self.project_root.clone() else {
+            self.open_palette(window, cx);
+            return;
+        };
+        self.quick_files = crate::quick_open::project_files(&root);
+        let items = crate::quick_open::items(&self.quick_files);
+        let state = self.quick_open.clone();
+        let weak = cx.weak_entity();
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let weak = weak.clone();
+            dialog
+                .title(rust_i18n::t!("ui.app.quick_open.title").to_string())
+                .width(px(620.))
+                .child(
+                    Command::new(&state)
+                        .items(items.clone())
+                        .max_h(px(380.))
+                        .placeholder(rust_i18n::t!("ui.app.quick_open.placeholder").to_string())
+                        .on_confirm(move |index, window, cx| {
+                            let _ = weak.update(cx, |root, cx| {
+                                let Some(rel) = root.quick_files.get(index.row).cloned() else {
+                                    return;
+                                };
+                                let Some(kind) = crate::panels::tree::open_kind(&rel) else {
+                                    return;
+                                };
+                                root.open_project_file(PathBuf::from(rel), kind, window, cx);
+                            });
+                        }),
+                )
+        });
+        let focus = self.quick_open.clone();
+        window.defer(cx, move |window, cx| {
+            focus.update(cx, |state, cx| state.focus(window, cx));
+        });
+    }
+
     /// Ejecuta un comando de la paleta.
     pub fn run_palette_command(
         &mut self,
@@ -1756,6 +1967,26 @@ impl AppRoot {
             }
             PaletteCommand::OpenProject => self.open_project_dialog(window, cx),
             PaletteCommand::NewProject => self.open_new_project_dialog(window, cx),
+            PaletteCommand::SyncForward => self.sync_forward(window, cx),
+            PaletteCommand::FixWithAi => self.fix_with_ai(window, cx),
+            PaletteCommand::NewChat => self.new_chat(window, cx),
+            PaletteCommand::Save => {
+                self.editor_panel
+                    .update(cx, |panel, cx| panel.save_active(window, cx));
+            }
+            PaletteCommand::SaveAll => {
+                self.editor_panel.update(cx, |panel, cx| panel.save_all(cx));
+            }
+            PaletteCommand::QuickOpen => self.open_quick_open(window, cx),
+            PaletteCommand::CloseTab => {
+                self.editor_panel
+                    .update(cx, |panel, cx| panel.close_active(window, cx));
+            }
+            PaletteCommand::ResetLayout => self.reset_layout(window, cx),
+            PaletteCommand::ConfigureAi => self.open_ai_settings(window, cx),
+            PaletteCommand::Shortcuts => self.open_shortcuts(window, cx),
+            PaletteCommand::About => self.open_about(window, cx),
+            PaletteCommand::Quit => self.request_quit(window, cx),
         }
     }
 
@@ -1795,11 +2026,15 @@ impl AppRoot {
             enabled: self.settings.editor.autosave.enabled,
             interval_secs: u64::from(self.settings.editor.autosave.interval_secs),
         };
-        self.editor_panel
-            .update(cx, |panel, cx| panel.set_autosave(autosave, cx));
+        let prefs = editor_prefs(&self.settings);
+        self.editor_panel.update(cx, |panel, cx| {
+            panel.set_autosave(autosave, cx);
+            panel.set_preferences(prefs, window, cx);
+        });
         let zoom_mode = ZoomMode::from_setting(&self.settings.pdf.zoom_mode);
         self.pdf_panel.update(cx, |panel, cx| {
             panel.set_zoom_mode(zoom_mode, cx);
+            panel.set_dark_pages(self.settings.pdf.dark_pages, cx);
             if zoom_mode == ZoomMode::Manual {
                 panel.set_zoom(self.settings.pdf.zoom, cx);
             }
@@ -1822,57 +2057,36 @@ impl AppRoot {
 
     // --- render ---------------------------------------------------------------
 
+    /// Barra superior única (estilo VS Code): menús a la izquierda, «command
+    /// center» con el proyecto en el centro y acciones a la derecha. Sustituye a
+    /// las tres filas de 0.2 (título + menú + toolbar).
     fn render_title_bar(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let project = self
-            .status_model
-            .project
-            .clone()
-            .unwrap_or_else(|| rust_i18n::t!("ui.app.status.no_project").to_string());
-        let project = if self.editor_dirty {
-            format!("• {project}")
-        } else {
-            project
-        };
-        TitleBar::new().child(
-            h_flex()
-                .flex_1()
-                .items_center()
-                .px_2()
-                .gap_2()
-                .child(
-                    div()
-                        .text_sm()
-                        .child(rust_i18n::t!("ui.app.title").to_string()),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(project),
-                ),
-        )
-    }
-
-    fn render_toolbar(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let project_name = self
             .status_model
             .project
             .clone()
             .unwrap_or_else(|| rust_i18n::t!("ui.app.status.no_project").to_string());
+        let project_label = if self.editor_dirty {
+            format!("● {project_name}")
+        } else {
+            project_name
+        };
         let weak = cx.weak_entity();
         let recents = self.project.candidates(&self.settings);
         let current_root = self.tree.read(cx).project().map(|p| p.root.clone());
 
-        let project_button = Button::new("toolbar-project")
-            .icon(IconName::FolderOpen)
-            .label(project_name)
+        let center_button = Button::new("titlebar-project")
+            .icon(IconName::Search)
+            .label(project_label)
             .small()
-            .ghost()
-            .tooltip(rust_i18n::t!("ui.app.toolbar.open_folder").to_string())
-            .on_click(cx.listener(|this, _, window, cx| this.open_project_dialog(window, cx)));
-
-        let project_menu = DropdownButton::new("toolbar-project-menu")
-            .button(project_button)
+            .outline()
+            .w(px(280.))
+            .tab_stop(false)
+            .tooltip(rust_i18n::t!("ui.app.toolbar.palette").to_string())
+            .on_click(cx.listener(|this, _, window, cx| this.open_palette(window, cx)));
+        let project_menu = DropdownButton::new("titlebar-project-menu")
+            .button(center_button)
+            .small()
             .dropdown_menu(move |menu, window, cx| {
                 let callbacks = toolbar::ProjectMenuCallbacks::new(
                     {
@@ -1906,7 +2120,7 @@ impl AppRoot {
                 )
             });
 
-        let mut toggles = h_flex().items_center().gap_1();
+        let mut toggles = h_flex().items_center().gap_0p5();
         for kind in SlotKind::ALL {
             let collapsed = self.layout.is_collapsed(kind);
             toggles = toggles.child(toolbar::slot_toggle(
@@ -1917,31 +2131,17 @@ impl AppRoot {
             ));
         }
 
-        h_flex()
+        let actions = h_flex()
             .flex_none()
-            .h(px(toolbar::HEIGHT))
-            .px_2()
-            .gap_2()
             .items_center()
-            .bg(cx.theme().title_bar)
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .child(project_menu)
-            .child(toolbar::separator(cx))
+            .gap_1()
             .child(toolbar::compile_button(
                 rust_i18n::t!("ui.app.toolbar.compile").to_string(),
                 self.status_model.compile.is_busy(),
                 cx.listener(|this, _, window, cx| this.request_compile(window, cx)),
             ))
-            .child(toolbar::engine_indicator(
-                cx,
-                &self.status_model.engine_label.clone(),
-                self.status_model.engine_available,
-                cx.listener(|this, _, window, cx| this.open_engine_help(window, cx)),
-            ))
             .child(toolbar::separator(cx))
             .child(toggles)
-            .child(div().flex_1())
             .child(toolbar::separator(cx))
             .child(toolbar::icon_button(
                 cx,
@@ -1955,7 +2155,6 @@ impl AppRoot {
                 self.sync_scroll,
                 cx.listener(|this, _, window, cx| this.toggle_sync_scroll(window, cx)),
             ))
-            .child(toolbar::separator(cx))
             .child(toolbar::icon_button(
                 cx,
                 "toolbar-focus",
@@ -1968,7 +2167,6 @@ impl AppRoot {
                 self.layout.focus.is_some(),
                 cx.listener(|this, _, window, cx| this.toggle_focus_mode(window, cx)),
             ))
-            .child(toolbar::separator(cx))
             .child(toolbar::icon_button(
                 cx,
                 "toolbar-settings",
@@ -1976,15 +2174,26 @@ impl AppRoot {
                 rust_i18n::t!("ui.app.toolbar.settings").to_string(),
                 false,
                 cx.listener(|this, _, window, cx| this.open_settings(window, cx)),
-            ))
-            .child(toolbar::icon_button(
-                cx,
-                "toolbar-palette",
-                IconName::Search,
-                rust_i18n::t!("ui.app.toolbar.palette").to_string(),
-                false,
-                cx.listener(|this, _, window, cx| this.open_palette(window, cx)),
-            ))
+            ));
+
+        TitleBar::new().child(
+            h_flex()
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .items_center()
+                .gap_2()
+                .pr_2()
+                .child(div().flex_none().child(self.menu_bar.clone()))
+                .child(
+                    h_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .justify_center()
+                        .child(project_menu),
+                )
+                .child(actions),
+        )
     }
 }
 
@@ -2044,8 +2253,8 @@ impl gpui_kit::component::dock::Panel for PdfSlot {
         Some(self.pane_title().into())
     }
 
-    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        self.pane_title()
+    fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::panels::pane::pane_title_label(self.pane_title(), cx)
     }
 
     fn toolbar_buttons(
@@ -2058,7 +2267,7 @@ impl gpui_kit::component::dock::Panel for PdfSlot {
                 .icon(IconName::ExternalLink)
                 .xsmall()
                 .tab_stop(false)
-                .tooltip("Abrir en visor externo")
+                .tooltip(rust_i18n::t!("ui.app.text.abrir_en_visor_externo").to_string())
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.pdf.update(cx, |panel, _| panel.open_external());
                 })),
@@ -2147,8 +2356,8 @@ impl gpui_kit::component::dock::Panel for ChatSlot {
         Some(self.pane_title().into())
     }
 
-    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        self.pane_title()
+    fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::panels::pane::pane_title_label(self.pane_title(), cx)
     }
 
     fn toolbar_buttons(
@@ -2241,8 +2450,8 @@ impl gpui_kit::component::dock::Panel for EditorSlot {
         Some(self.pane_title().into())
     }
 
-    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        self.pane_title()
+    fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::panels::pane::pane_title_label(self.pane_title(), cx)
     }
 
     fn toolbar_buttons(
@@ -2304,10 +2513,27 @@ fn resolve_tex_bin(settings: &Settings, portable: &PortableRoot) -> PathBuf {
     portable.tex_dir().join("bin").join("windows")
 }
 
-fn resolve_opencode_exe(raw: &str) -> PathBuf {
+/// `editor.*` de settings → preferencias visuales del editor.
+fn editor_prefs(settings: &Settings) -> crate::panels::editor::EditorPrefs {
+    crate::panels::editor::EditorPrefs {
+        font_family: settings
+            .editor
+            .font_family
+            .as_deref()
+            .map(str::trim)
+            .filter(|family| !family.is_empty())
+            .map(|family| SharedString::from(family.to_owned())),
+        font_size: settings.editor.font_size,
+        tab_size: settings.editor.tab_size as usize,
+        soft_wrap: settings.editor.soft_wrap,
+    }
+}
+
+/// `advanced.pythonOverride`: acepta el intérprete o la carpeta que lo contiene.
+fn resolve_python(raw: &str) -> PathBuf {
     let path = PathBuf::from(raw);
     if path.is_dir() {
-        path.join("opencode.exe")
+        path.join("python.exe")
     } else {
         path
     }
@@ -2349,33 +2575,149 @@ pub fn initial_window_bounds(state: &WindowSettings, cx: &App) -> WindowBounds {
 fn app_menus(layout: &ShellLayout) -> Vec<Menu> {
     let checked = |kind: SlotKind| !layout.is_collapsed(kind);
     vec![
-        Menu::new("Archivo").items([
-            MenuItem::action("Nuevo proyecto…", NewProject),
-            MenuItem::action("Abrir carpeta…", OpenProject),
+        Menu::new(rust_i18n::t!("ui.app.text.archivo").to_string()).items([
+            MenuItem::action(
+                rust_i18n::t!("ui.app.text.nuevo_proyecto").to_string(),
+                NewProject,
+            ),
+            MenuItem::action(
+                rust_i18n::t!("ui.app.text.abrir_carpeta_2").to_string(),
+                OpenProject,
+            ),
+            MenuItem::action(
+                rust_i18n::t!("ui.app.text.abrir_archivo").to_string(),
+                QuickOpen,
+            ),
             MenuItem::separator(),
-            MenuItem::action("Guardar", SaveDocument),
+            MenuItem::action(
+                rust_i18n::t!("ui.app.text.guardar").to_string(),
+                SaveDocument,
+            ),
+            MenuItem::action(
+                rust_i18n::t!("ui.app.text.guardar_todo").to_string(),
+                SaveAll,
+            ),
+            MenuItem::action(
+                rust_i18n::t!("ui.app.text.cerrar_pestana").to_string(),
+                CloseActiveTab,
+            ),
             MenuItem::separator(),
-            MenuItem::action("Salir", QuitApp),
+            MenuItem::action(
+                rust_i18n::t!("ui.app.text.ajustes").to_string(),
+                OpenSettingsPane,
+            ),
+            MenuItem::separator(),
+            MenuItem::action(rust_i18n::t!("ui.app.text.salir").to_string(), QuitApp),
         ]),
-        Menu::new("Ver").items([
-            MenuItem::action("Explorador", ToggleTreePane).checked(checked(SlotKind::Tree)),
-            MenuItem::action("Editor", ToggleEditorPane).checked(checked(SlotKind::Editor)),
-            MenuItem::action("PDF", TogglePdfPane).checked(checked(SlotKind::Pdf)),
-            MenuItem::action("Chat IA", ToggleChatPane).checked(checked(SlotKind::Chat)),
+        // Las acciones del kit las atiende el editor enfocado.
+        Menu::new(rust_i18n::t!("ui.app.text.editar").to_string()).items([
+            MenuItem::action(
+                rust_i18n::t!("ui.app.text.deshacer").to_string(),
+                input::Undo,
+            ),
+            MenuItem::action(
+                rust_i18n::t!("ui.app.text.rehacer").to_string(),
+                input::Redo,
+            ),
             MenuItem::separator(),
-            MenuItem::action("Modo focus", ToggleFocusMode).checked(layout.focus.is_some()),
-            MenuItem::action("Restablecer layout", ResetLayout),
-        ]),
-        Menu::new("Herramientas").items([
-            MenuItem::action("Compilar", CompileProject),
-            MenuItem::action("Ir a la línea del PDF (SyncTeX)", SyncForward),
+            MenuItem::action(rust_i18n::t!("ui.app.text.cortar").to_string(), input::Cut),
+            MenuItem::action(rust_i18n::t!("ui.app.text.copiar").to_string(), input::Copy),
+            MenuItem::action(rust_i18n::t!("ui.app.text.pegar").to_string(), input::Paste),
+            MenuItem::action(
+                rust_i18n::t!("ui.app.text.seleccionar_todo").to_string(),
+                input::SelectAll,
+            ),
             MenuItem::separator(),
-            MenuItem::action("Ajustes…", OpenSettingsPane),
-            MenuItem::action("Paleta de comandos…", OpenPalette),
+            MenuItem::action(
+                rust_i18n::t!("ui.app.text.buscar").to_string(),
+                input::Search,
+            ),
+            MenuItem::action(
+                rust_i18n::t!("ui.app.text.reemplazar").to_string(),
+                input::Replace,
+            ),
+            MenuItem::separator(),
+            MenuItem::action(
+                rust_i18n::t!("ui.app.text.comentar_o_descomentar_lineas").to_string(),
+                ToggleComment,
+            ),
         ]),
-        Menu::new("Ayuda").items([
-            MenuItem::action("Atajos de teclado", ShowShortcuts),
-            MenuItem::action("Acerca de LaTeX Studio", ShowAbout),
+        Menu::new(rust_i18n::t!("ui.app.text.ver").to_string()).items([
+            MenuItem::action(
+                rust_i18n::t!("ui.app.text.explorador").to_string(),
+                ToggleTreePane,
+            )
+            .checked(checked(SlotKind::Tree)),
+            MenuItem::action(
+                rust_i18n::t!("ui.app.text.editor").to_string(),
+                ToggleEditorPane,
+            )
+            .checked(checked(SlotKind::Editor)),
+            MenuItem::action(rust_i18n::t!("ui.app.text.pdf").to_string(), TogglePdfPane)
+                .checked(checked(SlotKind::Pdf)),
+            MenuItem::action(
+                rust_i18n::t!("ui.app.text.chat_ia").to_string(),
+                ToggleChatPane,
+            )
+            .checked(checked(SlotKind::Chat)),
+            MenuItem::separator(),
+            MenuItem::action(
+                rust_i18n::t!("ui.app.text.modo_focus").to_string(),
+                ToggleFocusMode,
+            )
+            .checked(layout.focus.is_some()),
+            MenuItem::action(
+                rust_i18n::t!("ui.app.text.restablecer_layout").to_string(),
+                ResetLayout,
+            ),
+        ]),
+        Menu::new(rust_i18n::t!("ui.app.text.latex").to_string()).items([
+            MenuItem::action(
+                rust_i18n::t!("ui.app.text.compilar").to_string(),
+                CompileProject,
+            ),
+            MenuItem::action(
+                rust_i18n::t!("ui.app.text.ir_a_esta_linea_en_el_pdf_synctex").to_string(),
+                SyncForward,
+            ),
+            MenuItem::separator(),
+            MenuItem::action(
+                rust_i18n::t!("ui.app.text.arreglar_errores_con_ia").to_string(),
+                FixWithAi,
+            ),
+        ]),
+        Menu::new(rust_i18n::t!("ui.app.text.ia").to_string()).items([
+            MenuItem::action(
+                rust_i18n::t!("ui.app.text.nueva_conversacion").to_string(),
+                NewChat,
+            ),
+            MenuItem::action(
+                rust_i18n::t!("ui.app.text.arreglar_errores_con_ia").to_string(),
+                FixWithAi,
+            ),
+            MenuItem::action(
+                rust_i18n::t!("ui.app.text.preguntar_sobre_la_seleccion").to_string(),
+                AskAiAboutSelection,
+            ),
+            MenuItem::separator(),
+            MenuItem::action(
+                rust_i18n::t!("ui.app.text.proveedores_y_modelo").to_string(),
+                ConfigureAi,
+            ),
+        ]),
+        Menu::new(rust_i18n::t!("ui.app.text.ayuda").to_string()).items([
+            MenuItem::action(
+                rust_i18n::t!("ui.app.text.paleta_de_comandos_2").to_string(),
+                OpenPalette,
+            ),
+            MenuItem::action(
+                rust_i18n::t!("ui.app.text.atajos_de_teclado").to_string(),
+                ShowShortcuts,
+            ),
+            MenuItem::action(
+                rust_i18n::t!("ui.app.text.acerca_de_latex_studio").to_string(),
+                ShowAbout,
+            ),
         ]),
     ]
 }
@@ -2546,21 +2888,23 @@ impl Render for AppRoot {
                 cx.listener(|this, _: &ShowShortcuts, window, cx| this.open_shortcuts(window, cx)),
             )
             .on_action(cx.listener(|this, _: &ShowAbout, window, cx| this.open_about(window, cx)))
-            .on_action(cx.listener(|_this, _: &QuitApp, window, _cx| {
-                window.remove_window();
+            .on_action(cx.listener(|this, _: &QuitApp, window, cx| this.request_quit(window, cx)))
+            .on_action(cx.listener(|this, _: &FixWithAi, window, cx| this.fix_with_ai(window, cx)))
+            .on_action(cx.listener(|this, _: &NewChat, window, cx| this.new_chat(window, cx)))
+            .on_action(
+                cx.listener(|this, _: &ConfigureAi, window, cx| this.open_ai_settings(window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &QuickOpen, window, cx| this.open_quick_open(window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &CloseActiveTab, window, cx| {
+                this.editor_panel
+                    .update(cx, |panel, cx| panel.close_active(window, cx));
+            }))
+            .on_action(cx.listener(|this, _: &SaveAll, _window, cx| {
+                this.editor_panel.update(cx, |panel, cx| panel.save_all(cx));
             }))
             .child(self.render_title_bar(window, cx))
-            .child(
-                div()
-                    .flex_none()
-                    .h(px(28.))
-                    .px_2()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .bg(cx.theme().title_bar)
-                    .child(self.menu_bar.clone()),
-            )
-            .child(self.render_toolbar(window, cx))
             .child(div().flex_1().min_h_0().child(self.dock.clone()))
             .child(status_bar::render(
                 &self.status_model,
@@ -2609,15 +2953,12 @@ mod tests {
     }
 
     #[test]
-    fn resolve_opencode_exe_acepta_fichero_o_carpeta() {
+    fn resolve_python_acepta_fichero_o_carpeta() {
         assert_eq!(
-            resolve_opencode_exe("C:/tools/opencode.exe"),
-            PathBuf::from("C:/tools/opencode.exe")
+            resolve_python("C:/tools/python.exe"),
+            PathBuf::from("C:/tools/python.exe")
         );
-        assert_eq!(
-            resolve_opencode_exe("."),
-            PathBuf::from(".").join("opencode.exe")
-        );
+        assert_eq!(resolve_python("."), PathBuf::from(".").join("python.exe"));
     }
 
     #[test]
@@ -2651,10 +2992,10 @@ mod tests {
     }
 
     #[test]
-    fn los_menus_cubren_archivo_ver_herramientas_y_ayuda() {
+    fn los_menus_cubren_archivo_editar_ver_latex_ia_y_ayuda() {
         let menus = app_menus(&ShellLayout::four_columns());
         let names: Vec<String> = menus.iter().map(|menu| menu.name.to_string()).collect();
-        assert_eq!(names, ["Archivo", "Ver", "Herramientas", "Ayuda"]);
+        assert_eq!(names, ["Archivo", "Editar", "Ver", "LaTeX", "IA", "Ayuda"]);
         assert!(menus.iter().all(|menu| !menu.items.is_empty()));
     }
 

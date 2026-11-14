@@ -1,8 +1,8 @@
 //! `xtask` — herramientas de desarrollo de LaTeX Studio.
 //!
 //! Uso: `cargo run -p xtask -- <tarea>`
-//! - `chat-replay [ruta.jsonl]` → reproduce fixtures SSE de opencode contra el
-//!   mapeo de dominio (sin red, sin tokens) y resume por tipo de evento.
+//! - `chat-replay [ruta.jsonl]` → reproduce fixtures de eventos del agente
+//!   contra el mapeo de dominio (sin red, sin tokens) y resume por tipo.
 //! - `fixtures` → restaurar fixtures (M0, pendiente)
 //! - `pdf-golden` → comparativa visual de PDFs (M0-S3, pendiente)
 //! - `dist [--no-tex] [--no-zip] [--clean] [--tex-dir=…]` → ensambla la
@@ -31,14 +31,14 @@ fn main() {
     }
 }
 
-/// Reproduce un fixture `.jsonl` de `fixtures/opencode/events` (o la ruta dada)
+/// Reproduce un fixture `.jsonl` de `fixtures/agent/events` (o la ruta dada)
 /// y resume los eventos de dominio resultantes.
 fn chat_replay() {
     let path = match std::env::args().nth(2) {
         Some(arg) => PathBuf::from(arg),
         None => {
-            let dir = Path::new("fixtures/opencode/events");
-            match lsx_chat::replay::find_latest(dir, "spike-", ".jsonl") {
+            let dir = Path::new("fixtures/agent/events");
+            match lsx_chat::replay::find_latest(dir, "", ".jsonl") {
                 Ok(Some(path)) => path,
                 Ok(None) => {
                     eprintln!("no hay fixtures en {}", dir.display());

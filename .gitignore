@@ -11,6 +11,10 @@
 # Distribución pesada y legacy (se quedan en disco, no en git)
 /legacy
 /tex
+/agent/python/
+/agent/lib/
+/agent/lsx_agent/
+# restos de 0.2 (opencode)
 /agent/opencode.exe
 /agent/auth*.json
 
@@ -20,6 +24,7 @@
 /config/editor-session.json
 /config/backups/
 /config/secrets/
+/config/agent/
 /logs/
 
 # Artefactos LaTeX
@@ -54,3 +59,9 @@ Desktop.ini
 
 # Config efectiva generada por la app (skills.paths del bundle)
 config/opencode.runtime.json
+
+# Entorno de desarrollo del agente Python
+/python/.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/

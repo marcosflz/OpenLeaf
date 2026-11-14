@@ -6,7 +6,7 @@
 //! latex-ide/
 //!   latex-studio.exe      ← el binario vive en la raíz
 //!   tex/                  ← TeX Live reducido
-//!   agent/                ← opencode.exe + opencode.json
+//!   agent/                ← agente LaTeX: python/ (embebido), lib/ (nas-adk), lsx_agent/
 //!   workspace/            ← proyectos del usuario
 //!   config/               ← settings.json (estado de usuario)
 //!   logs/
@@ -120,19 +120,44 @@ impl PortableRoot {
             .join("synctex.exe")
     }
 
-    /// `<root>/agent` — bundle de opencode.
+    /// `<root>/agent`: agente LaTeX (Python embebido + nas-adk + `lsx_agent`).
     pub fn agent_dir(&self) -> PathBuf {
         self.0.join("agent")
     }
 
-    /// `agent/opencode.exe`.
-    pub fn opencode_exe(&self) -> PathBuf {
-        self.agent_dir().join("opencode.exe")
+    /// `agent/python/python.exe`: intérprete embebido del agente.
+    pub fn agent_python(&self) -> PathBuf {
+        self.agent_dir().join("python").join("python.exe")
     }
 
-    /// `agent/opencode.json`.
-    pub fn opencode_config(&self) -> PathBuf {
-        self.agent_dir().join("opencode.json")
+    /// `PYTHONPATH` del agente empaquetado: `agent/lib` (nas-adk y
+    /// dependencias) y `agent` (paquete `lsx_agent`).
+    pub fn agent_python_path(&self) -> Vec<PathBuf> {
+        vec![self.agent_dir().join("lib"), self.agent_dir()]
+    }
+
+    /// Modo desarrollo: `python/.venv` del repo (creado con `uv sync`) y la
+    /// carpeta `python/` con el paquete `lsx_agent`. `None` si no existe.
+    pub fn dev_agent(&self) -> Option<(PathBuf, Vec<PathBuf>)> {
+        let source = self.0.join("python");
+        let venv = source.join(".venv");
+        [
+            venv.join("Scripts").join("python.exe"),
+            venv.join("bin").join("python"),
+        ]
+        .into_iter()
+        .find(|python| python.is_file())
+        .map(|python| (python, vec![source]))
+    }
+
+    /// `config/agent`: sesiones, transcript y checkpoints del agente.
+    pub fn agent_data_dir(&self) -> PathBuf {
+        self.config_dir().join("agent")
+    }
+
+    /// `config/secrets/ai.json`: claves de proveedores de IA (fuera de git).
+    pub fn ai_secrets(&self) -> PathBuf {
+        self.config_dir().join("secrets").join("ai.json")
     }
 
     /// `<root>/config` — settings.json y backups.
@@ -153,9 +178,9 @@ impl PortableRoot {
     /// Prepara el layout de una instalación recién copiada: crea `<root>/workspace`
     /// y `<root>/config` si faltan (idempotente) y devuelve la ruta del workspace.
     ///
-    /// El instalador ligero no crea esas carpetas. Sin `workspace/` el `cwd` de
-    /// `opencode serve` no existe — y `Command::current_dir` falla, así que el
-    /// chat se quedaría sin agente en el primer arranque (M3-3).
+    /// El instalador ligero no crea esas carpetas, y el chat las necesita: el
+    /// proyecto por defecto vive en `workspace/` y el agente guarda sus sesiones
+    /// en `config/agent` (M3-3).
     pub fn ensure_layout(&self) -> std::io::Result<PathBuf> {
         let workspace = self.default_workspace();
         std::fs::create_dir_all(&workspace)?;
@@ -263,12 +288,20 @@ mod tests {
         );
         assert_eq!(root.agent_dir(), PathBuf::from("C:/lsx/agent"));
         assert_eq!(
-            root.opencode_exe(),
-            PathBuf::from("C:/lsx/agent/opencode.exe")
+            root.agent_python(),
+            PathBuf::from("C:/lsx/agent/python/python.exe")
         );
         assert_eq!(
-            root.opencode_config(),
-            PathBuf::from("C:/lsx/agent/opencode.json")
+            root.agent_python_path(),
+            vec![
+                PathBuf::from("C:/lsx/agent/lib"),
+                PathBuf::from("C:/lsx/agent")
+            ]
+        );
+        assert_eq!(root.agent_data_dir(), PathBuf::from("C:/lsx/config/agent"));
+        assert_eq!(
+            root.ai_secrets(),
+            PathBuf::from("C:/lsx/config/secrets/ai.json")
         );
         assert_eq!(root.config_dir(), PathBuf::from("C:/lsx/config"));
         assert_eq!(root.logs_dir(), PathBuf::from("C:/lsx/logs"));

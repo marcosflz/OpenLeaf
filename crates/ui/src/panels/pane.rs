@@ -5,6 +5,7 @@
 //! [`Pane`]: el contrato pequeño del shell (visibilidad + activación) que
 //! evita duplicar el chrome entre hojas.
 
+use gpui_kit::ParentElement as _;
 use gpui_kit::component::{
     ActiveTheme as _,
     dock::{BasePanel, DockArea, Panel as DockPanel},
@@ -149,6 +150,15 @@ pub trait Pane:
     fn pane_title(&self) -> String {
         self.pane_state().kind().title()
     }
+}
+
+/// Título de dock al estilo VS Code: etiqueta pequeña, en mayúsculas y atenuada.
+pub(crate) fn pane_title_label(title: String, cx: &App) -> gpui_kit::Div {
+    div()
+        .text_size(gpui_kit::px(crate::theme::tokens::TEXT_XS))
+        .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+        .text_color(cx.theme().muted_foreground)
+        .child(gpui_kit::SharedString::from(title.to_uppercase()))
 }
 
 /// Contenedor raíz común de un panel (fondo y color de texto del tema).

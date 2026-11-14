@@ -12,8 +12,8 @@
 //! - El tema y el acento se previsualizan en vivo; Cancelar/Escape restauran
 //!   el tema original. Guardar usa `AppRoot::apply_settings`, que valida de
 //!   nuevo y persiste de forma atómica.
-//! - La conexión de IA vive en [`crate::ai_setup`]; aquí solo se orquesta el
-//!   estado y se pinta. Los comandos de opencode corren en `background_spawn`.
+//! - La conexión de IA vive en [`crate::ai_setup`]: proveedores, claves en
+//!   `config/secrets/ai.json` y prueba de modelo (en `background_spawn`).
 //!
 //! La firma pública [`open_dialog`] se conserva para el shell.
 
@@ -31,6 +31,7 @@ use gpui_kit::component::{
     switch::Switch,
     v_flex,
 };
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, SharedString, Styled as _, Subscription, WeakEntity, Window, div,
@@ -39,7 +40,7 @@ use gpui_kit::{
 use lsx_core::config::{Settings, UiSettings, parse_accent};
 use lsx_core::root::PortableRoot;
 
-use crate::ai_setup::{self, AiSetup, AiSetupError};
+use crate::ai_setup::{self, AiSetup, AiSetupError, CredentialSource, ProviderStatus};
 use crate::app::AppRoot;
 use crate::theme;
 
@@ -53,8 +54,10 @@ const ZOOM_RANGE: (f32, f32) = (0.1, 8.0);
 const CACHE_RANGE: (u32, u32) = (16, 4096);
 /// Rango de autoguardado (s).
 const AUTOSAVE_RANGE: (u32, u32) = (5, 3600);
-/// Rango de puerto fijo de opencode.
-const PORT_RANGE: (u16, u16) = (1024, 65535);
+/// Rango del tamaño de fuente del editor (px).
+const FONT_SIZE_RANGE: (f32, f32) = (6.0, 72.0);
+/// Rango de la tabulación (espacios).
+const TAB_SIZE_RANGE: (u32, u32) = (1, 16);
 
 /// Temas ofrecidos (índice ↔ valor de `ui.theme`).
 const THEMES: [&str; 3] = ["dark", "light", "system"];
@@ -65,6 +68,8 @@ const LOG_LEVELS: [&str; 5] = ["trace", "debug", "info", "warn", "error"];
 /// Presets de permisos válidos según el esquema. `all` es el valor que escribe
 /// el menú del chat; `project` limita la aprobación a ediciones del proyecto.
 const PERMISSION_PRESETS: [&str; 3] = ["ask", "project", "all"];
+/// Modos del asistente (índice ↔ valor de `ai.agent`).
+const MODES: [&str; 3] = ["build", "latex-fix", "ask"];
 /// Ancho de los campos numéricos.
 const NUMBER_WIDTH: f32 = 128.;
 /// Ancho de los campos de texto medio.
@@ -122,13 +127,14 @@ enum Field {
     Theme,
     Accent,
     AutosaveInterval,
+    FontSize,
+    TabSize,
     Debounce,
     Timeout,
     ExtraArgs,
     PdfZoomMode,
     PdfZoom,
     PdfCache,
-    AiPort,
     AiAgent,
     LogLevel,
     PermissionPreset,
@@ -140,10 +146,10 @@ impl Field {
     fn section(self) -> Option<Section> {
         match self {
             Self::Theme | Self::Accent => Some(Section::Appearance),
-            Self::AutosaveInterval => Some(Section::Editor),
+            Self::AutosaveInterval | Self::FontSize | Self::TabSize => Some(Section::Editor),
             Self::Debounce | Self::Timeout | Self::ExtraArgs => Some(Section::Compilation),
             Self::PdfZoomMode | Self::PdfZoom | Self::PdfCache => Some(Section::Pdf),
-            Self::AiPort | Self::AiAgent | Self::PermissionPreset => Some(Section::Ai),
+            Self::AiAgent | Self::PermissionPreset => Some(Section::Ai),
             Self::LogLevel => Some(Section::Advanced),
             Self::Apply => None,
         }
@@ -176,6 +182,10 @@ struct SettingsDraft {
     accent: String,
     autosave_enabled: bool,
     autosave_interval: String,
+    font_family: String,
+    font_size: String,
+    tab_size: String,
+    soft_wrap: bool,
     auto_compile: bool,
     sync_scroll: bool,
     auto_install_packages: bool,
@@ -189,7 +199,6 @@ struct SettingsDraft {
     pdf_max_cache_mb: String,
     pdf_open_external: bool,
     ai_auto_start: bool,
-    ai_port: String,
     ai_model: String,
     ai_agent: String,
     ai_permission_preset: String,
@@ -204,6 +213,10 @@ impl SettingsDraft {
             accent: settings.ui.accent.clone(),
             autosave_enabled: settings.editor.autosave.enabled,
             autosave_interval: settings.editor.autosave.interval_secs.to_string(),
+            font_family: settings.editor.font_family.clone().unwrap_or_default(),
+            font_size: format_float(settings.editor.font_size),
+            tab_size: settings.editor.tab_size.to_string(),
+            soft_wrap: settings.editor.soft_wrap,
             auto_compile: settings.latex.auto_compile,
             sync_scroll: settings.latex.sync_scroll,
             auto_install_packages: settings.latex.auto_install_packages,
@@ -217,11 +230,6 @@ impl SettingsDraft {
             pdf_max_cache_mb: settings.pdf.max_cache_mb.to_string(),
             pdf_open_external: settings.pdf.open_external_on_double_click,
             ai_auto_start: settings.ai.auto_start,
-            ai_port: settings
-                .ai
-                .port
-                .map(|port| port.to_string())
-                .unwrap_or_default(),
             ai_model: settings.ai.model.clone().unwrap_or_default(),
             ai_agent: settings.ai.agent.clone(),
             ai_permission_preset: settings.ai.permission_preset.clone(),
@@ -262,6 +270,13 @@ impl SettingsDraft {
             Field::AutosaveInterval,
             &mut errors,
         );
+        let font_size = parse_f32_field(
+            &self.font_size,
+            FONT_SIZE_RANGE,
+            Field::FontSize,
+            &mut errors,
+        );
+        let tab_size = parse_u32_field(&self.tab_size, TAB_SIZE_RANGE, Field::TabSize, &mut errors);
         let debounce_ms = parse_u32_field(
             &self.debounce_ms,
             DEBOUNCE_RANGE,
@@ -282,10 +297,8 @@ impl SettingsDraft {
             Field::PdfCache,
             &mut errors,
         );
-        let ai_port = parse_optional_port(&self.ai_port, &mut errors);
-
-        let agent = self.ai_agent.trim().to_owned();
-        if agent.is_empty() {
+        let agent = self.ai_agent.trim().to_ascii_lowercase();
+        if !MODES.contains(&agent.as_str()) {
             errors.push(FieldError::new(
                 Field::AiAgent,
                 rust_i18n::t!("ui.app.settings.error_agent_empty"),
@@ -343,6 +356,13 @@ impl SettingsDraft {
         next.ui.accent = accent;
         next.editor.autosave.enabled = self.autosave_enabled;
         next.editor.autosave.interval_secs = autosave_interval.expect("intervalo validado");
+        next.editor.font_family = {
+            let value = self.font_family.trim();
+            (!value.is_empty()).then(|| value.to_owned())
+        };
+        next.editor.font_size = font_size.expect("tamaño validado");
+        next.editor.tab_size = tab_size.expect("tabulación validada");
+        next.editor.soft_wrap = self.soft_wrap;
         next.latex.auto_compile = self.auto_compile;
         next.latex.sync_scroll = self.sync_scroll;
         next.latex.auto_install_packages = self.auto_install_packages;
@@ -356,7 +376,6 @@ impl SettingsDraft {
         next.pdf.max_cache_mb = pdf_cache.expect("caché validada");
         next.pdf.open_external_on_double_click = self.pdf_open_external;
         next.ai.auto_start = self.ai_auto_start;
-        next.ai.port = ai_port.expect("puerto validado");
         next.ai.model = ai_model;
         next.ai.agent = agent;
         next.ai.permission_preset = permission;
@@ -368,16 +387,14 @@ impl SettingsDraft {
     }
 }
 
-/// Estado de la sección IA (comandos, catálogo y mensajes).
+/// Estado de la sección IA (proveedores, modelos y mensajes).
 #[derive(Default)]
 struct AiUiState {
     setup: Option<AiSetup>,
     setup_error: Option<String>,
-    exe_missing: bool,
-    providers: Vec<String>,
+    statuses: Vec<ProviderStatus>,
     models: Vec<String>,
-    loading: bool,
-    loaded: bool,
+    probing: bool,
     info: Option<String>,
     error: Option<String>,
 }
@@ -399,18 +416,22 @@ struct SettingsForm {
     zoom_mode_index: usize,
     log_index: usize,
     permission_index: usize,
+    mode_index: usize,
 
     accent_input: Entity<InputState>,
     autosave_interval: Entity<InputState>,
+    font_family: Entity<InputState>,
+    font_size: Entity<InputState>,
+    tab_size: Entity<InputState>,
     debounce: Entity<InputState>,
     timeout: Entity<InputState>,
     main_file: Entity<InputState>,
     extra_args: Entity<InputState>,
     pdf_zoom: Entity<InputState>,
     pdf_cache: Entity<InputState>,
-    ai_port: Entity<InputState>,
     ai_model: Entity<InputState>,
-    ai_agent: Entity<InputState>,
+    /// Campo de clave por proveedor con API (`opencode`, `openrouter`, `anthropic`).
+    key_inputs: Vec<(&'static str, Entity<InputState>)>,
     model_select: Entity<SelectState<SearchableVec<SharedString>>>,
 
     ai: AiUiState,
@@ -429,6 +450,7 @@ impl SettingsForm {
         let zoom_mode_index = index_of(&ZOOM_MODES, &settings.pdf.zoom_mode, 0);
         let log_index = index_of(&LOG_LEVELS, &settings.advanced.log_level, 2);
         let permission_index = permission_index(&settings.ai.permission_preset);
+        let mode_index = index_of(&MODES, &settings.ai.agent, 0);
 
         let accent_input = cx.new(|cx| {
             InputState::new(window, cx)
@@ -439,6 +461,21 @@ impl SettingsForm {
             InputState::new(window, cx)
                 .default_value(settings.editor.autosave.interval_secs.to_string())
                 .placeholder("30")
+        });
+        let font_family = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(settings.editor.font_family.clone().unwrap_or_default())
+                .placeholder("Cascadia Code, Consolas…")
+        });
+        let font_size = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(format_float(settings.editor.font_size))
+                .placeholder("14")
+        });
+        let tab_size = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(settings.editor.tab_size.to_string())
+                .placeholder("2")
         });
         let debounce = cx.new(|cx| {
             InputState::new(window, cx)
@@ -470,27 +507,23 @@ impl SettingsForm {
                 .default_value(settings.pdf.max_cache_mb.to_string())
                 .placeholder("256")
         });
-        let ai_port = cx.new(|cx| {
-            InputState::new(window, cx)
-                .default_value(
-                    settings
-                        .ai
-                        .port
-                        .map(|port| port.to_string())
-                        .unwrap_or_default(),
-                )
-                .placeholder("4096 (vacío = libre)")
-        });
         let ai_model = cx.new(|cx| {
             InputState::new(window, cx)
                 .default_value(settings.ai.model.clone().unwrap_or_default())
                 .placeholder("proveedor/modelo")
         });
-        let ai_agent = cx.new(|cx| {
-            InputState::new(window, cx)
-                .default_value(settings.ai.agent.clone())
-                .placeholder("build")
-        });
+        let key_inputs = ai_setup::PROVIDERS
+            .iter()
+            .filter(|spec| spec.env_key.is_some())
+            .map(|spec| {
+                let input = cx.new(|cx| {
+                    InputState::new(window, cx).placeholder(
+                        rust_i18n::t!("ui.app.settings.ai_key_placeholder").to_string(),
+                    )
+                });
+                (spec.id, input)
+            })
+            .collect();
         let model_select = cx.new(|cx| {
             SelectState::new(
                 SearchableVec::new(Vec::<SharedString>::new()),
@@ -506,11 +539,11 @@ impl SettingsForm {
             Err(error) => (None, Some(error.to_string())),
         };
         let setup = root_dir.clone().map(AiSetup::from_root);
-        let exe_missing = setup.as_ref().is_some_and(|setup| !setup.exe_exists());
         let ai = AiUiState {
+            statuses: setup.as_ref().map(AiSetup::status).unwrap_or_default(),
+            models: setup.as_ref().map(AiSetup::models).unwrap_or_default(),
             setup,
             setup_error: root_error.clone(),
-            exe_missing,
             ..AiUiState::default()
         };
 
@@ -529,22 +562,28 @@ impl SettingsForm {
             zoom_mode_index,
             log_index,
             permission_index,
+            mode_index,
             accent_input,
             autosave_interval,
+            font_family,
+            font_size,
+            tab_size,
             debounce,
             timeout,
             main_file,
             extra_args,
             pdf_zoom,
             pdf_cache,
-            ai_port,
             ai_model,
-            ai_agent,
+            key_inputs,
             model_select,
             ai,
             _subscriptions: Vec::new(),
         };
         form.subscribe_controls(cx);
+        if !form.ai.models.is_empty() {
+            form.sync_model_select(window, cx);
+        }
         form
     }
 
@@ -569,15 +608,16 @@ impl SettingsForm {
 
         let inputs = [
             self.autosave_interval.clone(),
+            self.font_family.clone(),
+            self.font_size.clone(),
+            self.tab_size.clone(),
             self.debounce.clone(),
             self.timeout.clone(),
             self.main_file.clone(),
             self.extra_args.clone(),
             self.pdf_zoom.clone(),
             self.pdf_cache.clone(),
-            self.ai_port.clone(),
             self.ai_model.clone(),
-            self.ai_agent.clone(),
         ];
         for input in inputs {
             self._subscriptions.push(cx.subscribe(
@@ -614,9 +654,6 @@ impl SettingsForm {
             return;
         }
         self.section = section;
-        if section == Section::Ai && !self.ai.loaded && !self.ai.loading {
-            self.refresh_ai(cx);
-        }
         cx.notify();
     }
 
@@ -669,6 +706,9 @@ impl SettingsForm {
         draft.theme = THEMES[self.theme_index].to_owned();
         draft.accent = self.accent_input.read(cx).value().trim().to_owned();
         draft.autosave_interval = self.autosave_interval.read(cx).value().trim().to_owned();
+        draft.font_family = self.font_family.read(cx).value().trim().to_owned();
+        draft.font_size = self.font_size.read(cx).value().trim().to_owned();
+        draft.tab_size = self.tab_size.read(cx).value().trim().to_owned();
         draft.debounce_ms = self.debounce.read(cx).value().trim().to_owned();
         draft.timeout_secs = self.timeout.read(cx).value().trim().to_owned();
         draft.main_file = self.main_file.read(cx).value().trim().to_owned();
@@ -676,8 +716,7 @@ impl SettingsForm {
         draft.pdf_zoom_mode = ZOOM_MODES[self.zoom_mode_index].to_owned();
         draft.pdf_zoom = self.pdf_zoom.read(cx).value().trim().to_owned();
         draft.pdf_max_cache_mb = self.pdf_cache.read(cx).value().trim().to_owned();
-        draft.ai_port = self.ai_port.read(cx).value().trim().to_owned();
-        draft.ai_agent = self.ai_agent.read(cx).value().trim().to_owned();
+        draft.ai_agent = MODES[self.mode_index].to_owned();
         draft.ai_permission_preset = PERMISSION_PRESETS[self.permission_index].to_owned();
         draft.log_level = LOG_LEVELS[self.log_index].to_owned();
         draft.ai_model = if self.ai.models.is_empty() {
@@ -760,32 +799,15 @@ impl SettingsForm {
         }
     }
 
-    fn open_opencode_config(&mut self, cx: &mut Context<Self>) {
-        let Some(root) = &self.root_dir else {
-            self.action_error = Some(
-                self.root_error
-                    .clone()
-                    .unwrap_or_else(|| rust_i18n::t!("ui.app.settings.path_unknown").to_string()),
-            );
-            cx.notify();
-            return;
+    fn open_agent_log(&mut self, cx: &mut Context<Self>) {
+        let result = match &self.ai.setup {
+            Some(setup) => setup.open_log(),
+            None => Err(AiSetupError::Root(self.root_error.clone().unwrap_or_else(
+                || rust_i18n::t!("ui.app.settings.path_unknown").to_string(),
+            ))),
         };
-        let path = root.opencode_config();
-        let result = if path.is_file() {
-            ai_setup::open_file(&path)
-        } else {
-            Err(AiSetupError::MissingPath(path.display().to_string()))
-        };
-        match result {
-            Ok(()) => {
-                self.action_error = None;
-                cx.notify();
-            }
-            Err(error) => {
-                self.action_error = Some(error.to_string());
-                cx.notify();
-            }
-        }
+        self.action_error = result.err().map(|error| error.to_string());
+        cx.notify();
     }
 
     fn open_agent_folder(&mut self, cx: &mut Context<Self>) {
@@ -820,108 +842,138 @@ impl SettingsForm {
         }
     }
 
-    // --- IA (P2-AI-1) -------------------------------------------------------
+    // --- IA -----------------------------------------------------------------
 
-    fn connect_provider(&mut self, cx: &mut Context<Self>) {
-        let Some(setup) = &self.ai.setup else {
-            self.ai.error = Some(
-                self.ai
-                    .setup_error
-                    .clone()
-                    .unwrap_or_else(|| rust_i18n::t!("ui.app.settings.path_unknown").to_string()),
-            );
-            cx.notify();
+    /// Relee el estado de proveedores y modelos (lectura local, instantánea).
+    fn reload_ai(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(setup) = &self.ai.setup {
+            self.ai.statuses = setup.status();
+            self.ai.models = setup.models();
+        }
+        self.sync_model_select(window, cx);
+        cx.notify();
+    }
+
+    fn provider_name(provider_id: &str) -> String {
+        ai_setup::provider(provider_id)
+            .map(|spec| spec.name.to_owned())
+            .unwrap_or_else(|| provider_id.to_owned())
+    }
+
+    fn save_key(&mut self, provider_id: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(setup) = self.ai.setup.clone() else {
             return;
         };
-        match setup.auth_login() {
+        let Some(input) = self
+            .key_inputs
+            .iter()
+            .find(|(id, _)| *id == provider_id)
+            .map(|(_, input)| input.clone())
+        else {
+            return;
+        };
+        let key = input.read(cx).value().to_string();
+        match setup.save_key(provider_id, &key) {
             Ok(()) => {
-                self.ai.info = Some(rust_i18n::t!("ui.app.settings.ai_login_started").to_string());
+                input.update(cx, |state, cx| state.set_value("", window, cx));
                 self.ai.error = None;
+                self.ai.info = Some(
+                    rust_i18n::t!(
+                        "ui.app.settings.ai_key_saved_info",
+                        provider = Self::provider_name(provider_id)
+                    )
+                    .to_string(),
+                );
+                // Primer proveedor configurado: se propone su primer modelo.
+                if self.settings.ai.model.is_none()
+                    && let Some(spec) = ai_setup::provider(provider_id)
+                    && let Some((model, _)) = spec.models.first()
+                {
+                    self.settings.ai.model = Some(format!("{provider_id}/{model}"));
+                    self.dirty = true;
+                }
             }
             Err(error) => {
                 self.ai.info = None;
-                self.ai.error = Some(
-                    rust_i18n::t!("ui.app.settings.ai_login_error", error = error).to_string(),
-                );
+                self.ai.error =
+                    Some(rust_i18n::t!("ui.app.settings.ai_key_error", error = error).to_string());
             }
         }
-        cx.notify();
+        self.reload_ai(window, cx);
     }
 
-    fn refresh_ai(&mut self, cx: &mut Context<Self>) {
-        if self.ai.loading {
-            return;
-        }
+    fn remove_key(
+        &mut self,
+        provider_id: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(setup) = self.ai.setup.clone() else {
-            self.ai.loaded = true;
-            self.ai.error = None;
-            cx.notify();
             return;
         };
-        if !setup.exe_exists() {
-            self.ai.exe_missing = true;
-            self.ai.loaded = true;
-            self.ai.error = None;
-            cx.notify();
-            return;
+        match setup.remove_key(provider_id) {
+            Ok(()) => {
+                self.ai.error = None;
+                self.ai.info = Some(
+                    rust_i18n::t!(
+                        "ui.app.settings.ai_key_removed_info",
+                        provider = Self::provider_name(provider_id)
+                    )
+                    .to_string(),
+                );
+            }
+            Err(error) => {
+                self.ai.info = None;
+                self.ai.error =
+                    Some(rust_i18n::t!("ui.app.settings.ai_key_error", error = error).to_string());
+            }
         }
-
-        self.ai.exe_missing = false;
-        self.ai.loading = true;
-        self.ai.loaded = true;
-        self.ai.info = None;
-        self.ai.error = None;
-        cx.notify();
-
-        let task = cx.background_spawn(async move { (setup.auth_list(), setup.models()) });
-        cx.spawn(async move |this, cx| {
-            let (providers, models) = task.await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                this.apply_ai_result(providers, models, window, cx);
-            });
-        })
-        .detach();
+        self.reload_ai(window, cx);
     }
 
+    /// Lanza una petición mínima con el modelo elegido (en segundo plano).
     fn probe_ai(&mut self, cx: &mut Context<Self>) {
-        if self.ai.loading {
+        if self.ai.probing {
             return;
         }
         let Some(setup) = self.ai.setup.clone() else {
-            self.ai.error = None;
+            return;
+        };
+        let model = self
+            .model_select
+            .read(cx)
+            .selected_value()
+            .map(|value| value.to_string())
+            .or_else(|| self.settings.ai.model.clone());
+        let Some(model) = model.filter(|model| !model.is_empty()) else {
+            self.ai.info = None;
+            self.ai.error = Some(rust_i18n::t!("ui.app.settings.ai_test_no_model").to_string());
             cx.notify();
             return;
         };
-        if !setup.exe_exists() {
-            self.ai.exe_missing = true;
-            self.ai.error = None;
-            cx.notify();
-            return;
-        }
-
-        self.ai.exe_missing = false;
-        self.ai.loading = true;
-        self.ai.info = None;
+        self.ai.probing = true;
         self.ai.error = None;
+        self.ai.info =
+            Some(rust_i18n::t!("ui.app.settings.ai_probing", model = model.as_str()).to_string());
         cx.notify();
 
-        let task = cx.background_spawn(async move { setup.probe() });
+        let target = model.clone();
+        let task = cx.background_spawn(async move { setup.probe(&target) });
         cx.spawn(async move |this, cx| {
             let result = task.await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                this.ai.loading = false;
+            let _ = this.update(cx, |this, cx| {
+                this.ai.probing = false;
                 match result {
-                    Ok(models) => {
-                        this.ai.models = models;
-                        this.sync_model_select(window, cx);
+                    Ok(text) => {
+                        this.ai.error = None;
                         this.ai.info = Some(
                             rust_i18n::t!(
                                 "ui.app.settings.ai_test_ok",
-                                count = this.ai.models.len()
+                                model = model.as_str(),
+                                text = text.as_str()
                             )
                             .to_string(),
                         );
-                        this.ai.error = None;
                     }
                     Err(error) => {
                         this.ai.info = None;
@@ -935,51 +987,6 @@ impl SettingsForm {
             });
         })
         .detach();
-    }
-
-    fn apply_ai_result(
-        &mut self,
-        providers: Result<Vec<String>, AiSetupError>,
-        models: Result<Vec<String>, AiSetupError>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.ai.loading = false;
-        let mut errors = Vec::new();
-
-        match providers {
-            Ok(providers) => self.ai.providers = providers,
-            Err(error) => errors
-                .push(rust_i18n::t!("ui.app.settings.ai_auth_error", error = error).to_string()),
-        }
-        match models {
-            Ok(models) => {
-                self.ai.models = models;
-                self.sync_model_select(window, cx);
-            }
-            Err(error) => errors
-                .push(rust_i18n::t!("ui.app.settings.ai_models_error", error = error).to_string()),
-        }
-
-        if errors.is_empty() {
-            self.ai.error = None;
-            self.ai.info = Some(
-                rust_i18n::t!(
-                    "ui.app.settings.ai_ready_count",
-                    providers = self.ai.providers.len(),
-                    models = self.ai.models.len()
-                )
-                .to_string(),
-            );
-        } else {
-            self.ai.info = None;
-            // `auth list` y `models` fallan con el mismo mensaje cuando falta el
-            // ejecutable; no repetirlo dos veces en la UI.
-            errors.sort();
-            errors.dedup();
-            self.ai.error = Some(errors.join(" "));
-        }
-        cx.notify();
     }
 
     /// Rellena el selector con el catálogo y conserva el modelo actual aunque
@@ -1014,12 +1021,25 @@ impl SettingsForm {
         self.zoom_mode_index = index_of(&ZOOM_MODES, &self.settings.pdf.zoom_mode, 0);
         self.log_index = index_of(&LOG_LEVELS, &self.settings.advanced.log_level, 2);
         self.permission_index = permission_index(&self.settings.ai.permission_preset);
+        self.mode_index = index_of(&MODES, &self.settings.ai.agent, 0);
 
         let values = [
             (self.accent_input.clone(), self.settings.ui.accent.clone()),
             (
                 self.autosave_interval.clone(),
                 self.settings.editor.autosave.interval_secs.to_string(),
+            ),
+            (
+                self.font_family.clone(),
+                self.settings.editor.font_family.clone().unwrap_or_default(),
+            ),
+            (
+                self.font_size.clone(),
+                format_float(self.settings.editor.font_size),
+            ),
+            (
+                self.tab_size.clone(),
+                self.settings.editor.tab_size.to_string(),
             ),
             (
                 self.debounce.clone(),
@@ -1043,18 +1063,9 @@ impl SettingsForm {
                 self.settings.pdf.max_cache_mb.to_string(),
             ),
             (
-                self.ai_port.clone(),
-                self.settings
-                    .ai
-                    .port
-                    .map(|port| port.to_string())
-                    .unwrap_or_default(),
-            ),
-            (
                 self.ai_model.clone(),
                 self.settings.ai.model.clone().unwrap_or_default(),
             ),
-            (self.ai_agent.clone(), self.settings.ai.agent.clone()),
         ];
         for (input, value) in values {
             input.update(cx, |state, cx| state.set_value(value, window, cx));
@@ -1285,6 +1296,35 @@ impl SettingsForm {
                 cx,
             ))
             .child(setting_row(
+                rust_i18n::t!("ui.app.settings.font_family").to_string(),
+                Some(rust_i18n::t!("ui.app.settings.font_family_hint").to_string()),
+                self.input_plain(&self.font_family, TEXT_WIDTH),
+                cx,
+            ))
+            .child(setting_row(
+                rust_i18n::t!("ui.app.settings.font_size").to_string(),
+                Some(rust_i18n::t!("ui.app.settings.font_size_hint").to_string()),
+                self.input_with_error(&self.font_size, Field::FontSize, NUMBER_WIDTH, cx),
+                cx,
+            ))
+            .child(setting_row(
+                rust_i18n::t!("ui.app.settings.tab_size").to_string(),
+                Some(rust_i18n::t!("ui.app.settings.tab_size_hint").to_string()),
+                self.input_with_error(&self.tab_size, Field::TabSize, NUMBER_WIDTH, cx),
+                cx,
+            ))
+            .child(setting_row(
+                rust_i18n::t!("ui.app.settings.soft_wrap").to_string(),
+                Some(rust_i18n::t!("ui.app.settings.soft_wrap_hint").to_string()),
+                Switch::new("settings-soft-wrap")
+                    .checked(self.settings.editor.soft_wrap)
+                    .on_change(cx.listener(|this, checked, _window, cx| {
+                        this.settings.editor.soft_wrap = *checked;
+                        this.mark_dirty(cx);
+                    })),
+                cx,
+            ))
+            .child(setting_row(
                 rust_i18n::t!("ui.app.settings.autosave").to_string(),
                 Some(rust_i18n::t!("ui.app.settings.autosave_hint").to_string()),
                 Switch::new("settings-autosave")
@@ -1470,167 +1510,85 @@ impl SettingsForm {
     }
 
     fn render_ai(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let exe_available = self
-            .ai
-            .setup
-            .as_ref()
-            .is_some_and(|setup| setup.exe_exists());
+        let agent_available = self.ai.setup.as_ref().is_some_and(AiSetup::agent_exists);
 
-        let status =
-            if let Some(error) = &self.ai.setup_error {
-                div()
-                    .max_w(px(380.))
-                    .text_xs()
-                    .text_color(cx.theme().danger)
-                    .child(error.clone())
-                    .into_any_element()
-            } else if self.ai.exe_missing {
-                v_flex()
-                    .gap_1()
-                    .max_w(px(380.))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().warning)
-                            .child(rust_i18n::t!("ui.app.settings.ai_exe_missing").to_string()),
-                    )
-                    .children(self.ai.setup.as_ref().map(|setup| {
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(setup.exe_path().display().to_string())
-                    }))
-                    .into_any_element()
-            } else if let Some(setup) = &self.ai.setup {
-                v_flex()
-                    .gap_1()
-                    .max_w(px(380.))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().success)
-                            .child(rust_i18n::t!("ui.app.settings.ai_exe_found").to_string()),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(setup.exe_path().display().to_string()),
-                    )
-                    .into_any_element()
+        let status = if let Some(error) = &self.ai.setup_error {
+            div()
+                .max_w(px(380.))
+                .text_xs()
+                .text_color(cx.theme().danger)
+                .child(error.clone())
+                .into_any_element()
+        } else if let Some(setup) = &self.ai.setup {
+            let (color, label) = if agent_available {
+                (
+                    cx.theme().success,
+                    rust_i18n::t!("ui.app.settings.ai_exe_found").to_string(),
+                )
             } else {
-                div()
-                    .max_w(px(380.))
-                    .text_xs()
-                    .text_color(cx.theme().danger)
-                    .child(self.root_error.clone().unwrap_or_else(|| {
-                        rust_i18n::t!("ui.app.settings.path_unknown").to_string()
-                    }))
-                    .into_any_element()
+                (
+                    cx.theme().warning,
+                    rust_i18n::t!("ui.app.settings.ai_exe_missing").to_string(),
+                )
             };
-
-        let connect = Button::new("settings-ai-connect")
-            .label(rust_i18n::t!("ui.app.settings.ai_connect").to_string())
-            .icon(IconName::CircleUser)
-            .disabled(!exe_available);
-        let connect = if self.ai.providers.is_empty() {
-            connect.primary()
+            v_flex()
+                .gap_1()
+                .max_w(px(380.))
+                .child(div().text_xs().text_color(color).child(label))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(setup.python_path().display().to_string()),
+                )
+                .into_any_element()
         } else {
-            connect.outline()
+            div().into_any_element()
         };
 
-        let actions = h_flex()
-            .flex_wrap()
-            .items_center()
-            .gap_2()
-            .child(connect.on_click(cx.listener(|this, _, _, cx| this.connect_provider(cx))))
-            .child(
-                Button::new("settings-ai-refresh")
-                    .outline()
-                    .label(rust_i18n::t!("ui.app.settings.ai_refresh").to_string())
-                    .icon(IconName::RefreshCw)
-                    .disabled(!exe_available || self.ai.loading)
-                    .on_click(cx.listener(|this, _, _, cx| this.refresh_ai(cx))),
-            )
-            .child(
-                Button::new("settings-ai-probe")
-                    .ghost()
-                    .label(rust_i18n::t!("ui.app.settings.ai_probe").to_string())
-                    .icon(IconName::Play)
-                    .disabled(!exe_available || self.ai.loading)
-                    .on_click(cx.listener(|this, _, _, cx| this.probe_ai(cx))),
-            )
-            .child(
-                Button::new("settings-ai-open-agent")
-                    .ghost()
-                    .label(rust_i18n::t!("ui.app.settings.ai_open_agent").to_string())
-                    .icon(IconName::FolderOpen)
-                    .on_click(cx.listener(|this, _, _, cx| this.open_agent_folder(cx))),
-            )
-            .child(
-                Button::new("settings-ai-open-config")
-                    .ghost()
-                    .label(rust_i18n::t!("ui.app.settings.ai_open_config").to_string())
-                    .icon(IconName::ExternalLink)
-                    .on_click(cx.listener(|this, _, _, cx| this.open_opencode_config(cx))),
-            );
+        let providers = v_flex().gap_2().w_full().children(
+            self.ai
+                .statuses
+                .iter()
+                .map(|status| self.render_provider(status, cx)),
+        );
 
-        let providers = if self.ai.loading {
+        let model_control = if self.ai.models.is_empty() {
             div()
-                .text_xs()
-                .text_color(cx.theme().muted_foreground)
-                .child(rust_i18n::t!("ui.app.settings.ai_loading").to_string())
-                .into_any_element()
-        } else if self.ai.providers.is_empty() {
-            div()
+                .max_w(px(TEXT_WIDTH))
                 .text_xs()
                 .text_color(cx.theme().muted_foreground)
                 .child(rust_i18n::t!("ui.app.settings.ai_no_providers").to_string())
                 .into_any_element()
         } else {
-            v_flex()
-                .gap_1()
-                .children(self.ai.providers.iter().map(|provider| {
-                    h_flex()
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            Icon::new(IconName::CircleCheck)
-                                .xsmall()
-                                .text_color(cx.theme().success),
-                        )
-                        .child(
-                            div()
-                                .min_w_0()
-                                .max_w(px(340.))
-                                .truncate()
-                                .text_sm()
-                                .child(SharedString::from(provider.clone())),
-                        )
-                }))
-                .into_any_element()
-        };
-
-        let model_control = if self.ai.models.is_empty() {
-            self.input_plain(&self.ai_model, TEXT_WIDTH)
-                .into_any_element()
-        } else {
-            div()
-                .w(px(TEXT_WIDTH))
+            h_flex()
+                .gap_2()
+                .items_center()
                 .child(
-                    Select::new(&self.model_select)
+                    div().w(px(TEXT_WIDTH)).child(
+                        Select::new(&self.model_select)
+                            .small()
+                            .placeholder(
+                                rust_i18n::t!("ui.app.settings.ai_model_placeholder").to_string(),
+                            )
+                            .menu_max_h(px(260.)),
+                    ),
+                )
+                .child(
+                    Button::new("settings-ai-probe")
                         .small()
-                        .placeholder(
-                            rust_i18n::t!("ui.app.settings.ai_model_placeholder").to_string(),
-                        )
-                        .menu_max_h(px(260.)),
+                        .outline()
+                        .label(rust_i18n::t!("ui.app.settings.ai_probe").to_string())
+                        .icon(IconName::Play)
+                        .loading(self.ai.probing)
+                        .disabled(!agent_available || self.ai.probing)
+                        .on_click(cx.listener(|this, _, _, cx| this.probe_ai(cx))),
                 )
                 .into_any_element()
         };
 
-        let feedback = h_flex()
-            .items_start()
-            .gap_2()
+        let feedback = v_flex()
+            .gap_1()
             .children(self.ai.error.as_ref().map(|error| {
                 h_flex()
                     .items_start()
@@ -1654,6 +1612,12 @@ impl SettingsForm {
                     .child(info.clone())
             }));
 
+        let modes = [
+            rust_i18n::t!("ui.app.settings.ai_mode_build").to_string(),
+            rust_i18n::t!("ui.app.settings.ai_mode_fix").to_string(),
+            rust_i18n::t!("ui.app.settings.ai_mode_ask").to_string(),
+        ];
+
         v_flex()
             .gap_1()
             .child(section_header(
@@ -1667,31 +1631,16 @@ impl SettingsForm {
                 status,
                 cx,
             ))
-            .child(actions)
-            .child(feedback)
-            .child(setting_row(
-                rust_i18n::t!("ui.app.settings.ai_providers").to_string(),
-                None,
-                providers,
-                cx,
-            ))
-            .child(setting_row(
-                rust_i18n::t!("ui.app.settings.ai_auto_start").to_string(),
-                Some(rust_i18n::t!("ui.app.settings.ai_auto_start_hint").to_string()),
-                Switch::new("settings-ai-autostart")
-                    .checked(self.settings.ai.auto_start)
-                    .on_change(cx.listener(|this, checked, _window, cx| {
-                        this.settings.ai.auto_start = *checked;
-                        this.mark_dirty(cx);
-                    })),
-                cx,
-            ))
-            .child(setting_row(
-                rust_i18n::t!("ui.app.settings.ai_port").to_string(),
-                Some(rust_i18n::t!("ui.app.settings.ai_port_hint").to_string()),
-                self.input_with_error(&self.ai_port, Field::AiPort, NUMBER_WIDTH, cx),
-                cx,
-            ))
+            .child(
+                div()
+                    .pt_2()
+                    .pb_1()
+                    .text_sm()
+                    .font_weight(gpui_kit::FontWeight::MEDIUM)
+                    .child(rust_i18n::t!("ui.app.settings.ai_providers").to_string()),
+            )
+            .child(providers)
+            .child(div().pt_1().child(feedback))
             .child(setting_row(
                 rust_i18n::t!("ui.app.settings.ai_model").to_string(),
                 Some(rust_i18n::t!("ui.app.settings.ai_model_hint").to_string()),
@@ -1701,7 +1650,22 @@ impl SettingsForm {
             .child(setting_row(
                 rust_i18n::t!("ui.app.settings.ai_agent").to_string(),
                 Some(rust_i18n::t!("ui.app.settings.ai_agent_hint").to_string()),
-                self.input_with_error(&self.ai_agent, Field::AiAgent, TEXT_WIDTH, cx),
+                v_flex()
+                    .gap_1()
+                    .child(
+                        RadioGroup::horizontal("settings-ai-mode")
+                            .selected_index(Some(self.mode_index))
+                            .children(modes.into_iter().enumerate().map(|(index, label)| {
+                                Radio::new(SharedString::from(format!("settings-ai-mode-{index}")))
+                                    .label(label)
+                            }))
+                            .on_click(cx.listener(|this, index, _window, cx| {
+                                this.mode_index = *index;
+                                this.dirty = true;
+                                cx.notify();
+                            })),
+                    )
+                    .children(self.field_error(Field::AiAgent, cx)),
                 cx,
             ))
             .child(setting_row(
@@ -1726,6 +1690,17 @@ impl SettingsForm {
                 cx,
             ))
             .child(setting_row(
+                rust_i18n::t!("ui.app.settings.ai_auto_start").to_string(),
+                Some(rust_i18n::t!("ui.app.settings.ai_auto_start_hint").to_string()),
+                Switch::new("settings-ai-autostart")
+                    .checked(self.settings.ai.auto_start)
+                    .on_change(cx.listener(|this, checked, _window, cx| {
+                        this.settings.ai.auto_start = *checked;
+                        this.mark_dirty(cx);
+                    })),
+                cx,
+            ))
+            .child(setting_row(
                 rust_i18n::t!("ui.app.settings.ai_show_reasoning").to_string(),
                 Some(rust_i18n::t!("ui.app.settings.ai_show_reasoning_hint").to_string()),
                 Switch::new("settings-ai-reasoning")
@@ -1737,12 +1712,154 @@ impl SettingsForm {
                 cx,
             ))
             .child(
+                h_flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_2()
+                    .pt_2()
+                    .child(
+                        Button::new("settings-ai-open-agent")
+                            .ghost()
+                            .small()
+                            .label(rust_i18n::t!("ui.app.settings.ai_open_agent").to_string())
+                            .icon(IconName::FolderOpen)
+                            .on_click(cx.listener(|this, _, _, cx| this.open_agent_folder(cx))),
+                    )
+                    .child(
+                        Button::new("settings-ai-open-log")
+                            .ghost()
+                            .small()
+                            .label(rust_i18n::t!("ui.app.settings.ai_open_log").to_string())
+                            .icon(IconName::FileText)
+                            .on_click(cx.listener(|this, _, _, cx| this.open_agent_log(cx))),
+                    ),
+            )
+            .child(
                 div()
                     .pt_2()
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
                     .child(rust_i18n::t!("ui.app.settings.ai_pending").to_string()),
             )
+    }
+
+    /// Fila de un proveedor: nombre, estado, ayuda y (si usa clave) el campo
+    /// para pegarla con sus acciones.
+    fn render_provider(&self, status: &ProviderStatus, cx: &mut Context<Self>) -> AnyElement {
+        let spec = status.spec;
+        let provider_id = spec.id;
+        let (icon, color, state_label) = if status.configured {
+            (
+                IconName::CircleCheck,
+                cx.theme().success,
+                rust_i18n::t!("ui.app.settings.ai_provider_ready").to_string(),
+            )
+        } else {
+            (
+                IconName::CircleX,
+                cx.theme().muted_foreground,
+                rust_i18n::t!("ui.app.settings.ai_provider_missing").to_string(),
+            )
+        };
+        let source = match &status.source {
+            CredentialSource::None if spec.env_key.is_none() => {
+                Some(rust_i18n::t!("ui.app.settings.ai_cli_missing").to_string())
+            }
+            CredentialSource::None => None,
+            CredentialSource::Saved { last4 } => Some(
+                rust_i18n::t!("ui.app.settings.ai_key_saved", last4 = last4.as_str()).to_string(),
+            ),
+            CredentialSource::Env(var) => {
+                Some(rust_i18n::t!("ui.app.settings.ai_key_env", var = *var).to_string())
+            }
+            CredentialSource::Cli(path) => Some(
+                rust_i18n::t!(
+                    "ui.app.settings.ai_cli_found",
+                    path = path.display().to_string()
+                )
+                .to_string(),
+            ),
+        };
+        let key_input = self
+            .key_inputs
+            .iter()
+            .find(|(id, _)| *id == provider_id)
+            .map(|(_, input)| input.clone());
+        let saved = matches!(status.source, CredentialSource::Saved { .. });
+
+        v_flex()
+            .id(SharedString::from(format!(
+                "settings-ai-provider-{provider_id}"
+            )))
+            .w_full()
+            .gap_1()
+            .px_3()
+            .py_2()
+            .rounded(cx.theme().radius)
+            .border_1()
+            .border_color(cx.theme().border)
+            .child(
+                h_flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .gap_2()
+                            .child(Icon::new(icon).xsmall().text_color(color))
+                            .child(div().text_sm().child(spec.name)),
+                    )
+                    .child(div().text_xs().text_color(color).child(state_label)),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(spec.help),
+            )
+            .children(source.map(|text| {
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(text)
+            }))
+            .children(key_input.map(|input| {
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .pt_1()
+                    .child(div().flex_1().child(Input::new(&input).small()))
+                    .child(
+                        Button::new(SharedString::from(format!(
+                            "settings-ai-save-{provider_id}"
+                        )))
+                        .small()
+                        .primary()
+                        .label(rust_i18n::t!("ui.app.settings.ai_key_save").to_string())
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.save_key(provider_id, window, cx);
+                            },
+                        )),
+                    )
+                    .when(saved, |row| {
+                        row.child(
+                            Button::new(SharedString::from(format!(
+                                "settings-ai-remove-{provider_id}"
+                            )))
+                            .small()
+                            .ghost()
+                            .label(rust_i18n::t!("ui.app.settings.ai_key_remove").to_string())
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| {
+                                    this.remove_key(provider_id, window, cx);
+                                },
+                            )),
+                        )
+                    })
+            }))
+            .into_any_element()
     }
 
     fn render_advanced(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1799,12 +1916,12 @@ impl SettingsForm {
                             .on_click(cx.listener(|this, _, _, cx| this.open_config_folder(cx))),
                     )
                     .child(
-                        Button::new("settings-open-opencode")
+                        Button::new("settings-open-agent-log")
                             .outline()
-                            .label(rust_i18n::t!("ui.app.settings.open_opencode").to_string())
-                            .icon(IconName::ExternalLink)
+                            .label(rust_i18n::t!("ui.app.settings.open_agent_log").to_string())
+                            .icon(IconName::FileText)
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.open_opencode_config(cx);
+                                this.open_agent_log(cx);
                             })),
                     ),
             )
@@ -2202,34 +2319,6 @@ fn parse_f32_field(
     }
 }
 
-fn parse_optional_port(value: &str, errors: &mut Vec<FieldError>) -> Option<Option<u16>> {
-    let value = value.trim();
-    if value.is_empty() {
-        return Some(None);
-    }
-    match value.parse::<u16>() {
-        Ok(port) if (PORT_RANGE.0..=PORT_RANGE.1).contains(&port) => Some(Some(port)),
-        Ok(_) => {
-            errors.push(FieldError::new(
-                Field::AiPort,
-                rust_i18n::t!(
-                    "ui.app.settings.error_port",
-                    min = PORT_RANGE.0,
-                    max = PORT_RANGE.1
-                ),
-            ));
-            None
-        }
-        Err(_) => {
-            errors.push(FieldError::new(
-                Field::AiPort,
-                rust_i18n::t!("ui.app.settings.error_number", value = value),
-            ));
-            None
-        }
-    }
-}
-
 fn parse_extra_args(value: &str, errors: &mut Vec<FieldError>) -> Option<Vec<String>> {
     let value = value.trim();
     if value.is_empty() {
@@ -2287,7 +2376,9 @@ mod tests {
             draft.pdf_zoom = "9".to_owned();
             draft.pdf_max_cache_mb = "1".to_owned();
             draft.autosave_interval = "1".to_owned();
-            draft.ai_port = "80".to_owned();
+            draft.font_size = "100".to_owned();
+            draft.tab_size = "0".to_owned();
+            draft.ai_agent = "plan".to_owned();
         });
         let mut settings = Settings::default();
         let errors = draft.apply_to(&mut settings).expect_err("fuera de rango");
@@ -2297,7 +2388,9 @@ mod tests {
         assert!(fields.contains(&Field::PdfZoom));
         assert!(fields.contains(&Field::PdfCache));
         assert!(fields.contains(&Field::AutosaveInterval));
-        assert!(fields.contains(&Field::AiPort));
+        assert!(fields.contains(&Field::AiAgent));
+        assert!(fields.contains(&Field::FontSize));
+        assert!(fields.contains(&Field::TabSize));
         // Nada se aplica si hay errores.
         assert_eq!(settings, Settings::default());
     }
@@ -2316,14 +2409,12 @@ mod tests {
         let draft = draft_with(|draft| {
             draft.main_file = "   ".to_owned();
             draft.extra_args = "  ".to_owned();
-            draft.ai_port = String::new();
             draft.ai_model = String::new();
         });
         let mut settings = Settings::default();
         draft.apply_to(&mut settings).expect("opcionales vacíos");
         assert!(settings.latex.main_file.is_none());
         assert!(settings.latex.extra_args.is_empty());
-        assert!(settings.ai.port.is_none());
         assert!(settings.ai.model.is_none());
     }
 
@@ -2388,6 +2479,7 @@ mod tests {
         assert_eq!(ZOOM_MODES.len(), 4);
         assert_eq!(LOG_LEVELS.len(), 5);
         assert_eq!(PERMISSION_PRESETS.len(), 3);
+        assert_eq!(MODES, ["build", "latex-fix", "ask"]);
         assert!(PERMISSION_PRESETS.contains(&"ask"));
         assert!(PERMISSION_PRESETS.contains(&"project"));
         assert!(PERMISSION_PRESETS.contains(&"all"));
@@ -2403,10 +2495,15 @@ mod tests {
         let draft = draft_with(|draft| {
             draft.theme = "light".to_owned();
             draft.accent = "#8B5CF6".to_owned();
-            draft.ai_model = "opencode-go/gpt-5.6-luna".to_owned();
+            draft.ai_model = "anthropic/claude-sonnet-5-5".to_owned();
+            draft.ai_agent = "latex-fix".to_owned();
             draft.ai_auto_start = false;
             draft.pdf_max_cache_mb = "512".to_owned();
             draft.main_file = "src/main.tex".to_owned();
+            draft.font_family = "Cascadia Code".to_owned();
+            draft.font_size = "15".to_owned();
+            draft.tab_size = "4".to_owned();
+            draft.soft_wrap = true;
         });
 
         let mut settings = Settings::default();
@@ -2417,10 +2514,18 @@ mod tests {
         assert!(warnings.is_empty(), "avisos inesperados: {warnings:?}");
         assert_eq!(loaded.ui.theme, "light");
         assert_eq!(loaded.ui.accent, "#8B5CF6");
-        assert_eq!(loaded.ai.model.as_deref(), Some("opencode-go/gpt-5.6-luna"));
+        assert_eq!(
+            loaded.ai.model.as_deref(),
+            Some("anthropic/claude-sonnet-5-5")
+        );
+        assert_eq!(loaded.ai.agent, "latex-fix");
         assert!(!loaded.ai.auto_start);
         assert_eq!(loaded.pdf.max_cache_mb, 512);
         assert_eq!(loaded.latex.main_file.as_deref(), Some("src/main.tex"));
+        assert_eq!(loaded.editor.font_family.as_deref(), Some("Cascadia Code"));
+        assert_eq!(loaded.editor.font_size, 15.0);
+        assert_eq!(loaded.editor.tab_size, 4);
+        assert!(loaded.editor.soft_wrap);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -1,0 +1,27 @@
+[project]
+name = "lsx-agent"
+version = "0.3.0"
+description = "Agente LaTeX de LaTeX Studio (sidecar NDJSON sobre nas-adk)"
+requires-python = ">=3.12"
+dependencies = [
+  "nas-adk @ https://github.com/marcosflz/nas-adk/releases/download/v0.3.0/nas_adk-0.3.0-py3-none-any.whl",
+]
+
+[project.optional-dependencies]
+anthropic = ["anthropic>=2,<3"]
+
+[dependency-groups]
+dev = ["pytest>=9,<10", "pytest-asyncio>=0.25", "ruff>=0.15"]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+pythonpath = [".", "tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"

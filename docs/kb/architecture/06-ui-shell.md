@@ -2,7 +2,7 @@
 id: kb/architecture/ui-shell
 title: Shell de cuatro hojas, paneles y estado visual
 status: stable
-updated: 2026-10-24
+updated: 2026-11-13
 source:
   - crates/ui/src/app.rs
   - crates/ui/src/layout.rs
@@ -10,6 +10,10 @@ source:
   - crates/ui/src/status_bar.rs
   - crates/ui/src/theme.rs
   - crates/ui/src/settings_ui.rs
+  - crates/ui/src/quick_open.rs
+  - crates/ui/src/panels/editor.rs
+  - crates/ui/src/panels/pdf.rs
+  - crates/ui/src/panels/tree.rs
 tags: [arquitectura, ui, gpui]
 related: [kb/product/promesas-ux, kb/quality/01-auditoria-2026-10-24]
 verified: true
@@ -19,26 +23,24 @@ verified: true
 
 ## Estructura
 
+Estética VS Code «Modern» desde 0.3: una sola barra superior y superficies neutras.
+
 ```
-TitleBar (controles del SO + proyecto)
-Toolbar  (proyecto · compilar · motor · toggles de panel · sync · focus · ajustes · palette)
-DockArea (split horizontal de 4 hojas)
-  ├─ Tree   (árbol + dock inferior PROBLEMAS | SALIDA | SÍMBOLOS)
-  ├─ Editor (pestañas + find/replace + diagnósticos)
-  ├─ Pdf    (render hayro + zoom + SyncTeX)
-  └─ Chat   (modelo/agente/permisos + conversación + composer)
+TitleBar (35 px): menús · [buscador: proyecto ▾] · Compilar · toggles de panel · sync · focus · ajustes · controles del SO
+DockArea (split horizontal de 4 hojas; títulos en mayúsculas de 11 px)
+  ├─ Tree   (cabecera = nombre del proyecto + árbol + dock inferior PROBLEMAS · SALIDA · SÍMBOLOS)
+  ├─ Editor (pestañas + find/replace + diagnósticos; sin línea de estado propia)
+  ├─ Pdf    (toolbar de 35 px: página, zoom, ancho/página; métricas solo con LSX_PDF_DEBUG=1)
+  └─ Chat   (modo · permisos · modelo · sesiones + conversación + composer)
 StatusBar (compilación · proyecto · Ln/Col · palabras · página · motor · IA)
 ```
 
-Las cabeceras de los paneles no tienen botón de ocultar: los cuatro toggles están en la
-toolbar, junto a **Compilar**, con iconos de árbol, código, libro/PDF y bot IA. El
-indicador de motor es un botón: abre un diálogo con versión, SyncTeX, biber, ruta y
-acciones **Reintentar / Abrir carpeta / Abrir Ajustes**. Al arrancar se hace
-un `probe` real en background (`TexLiveEngine::probe`) y la etiqueta pasa de
-“comprobando…” a `TeX Live 4.88` (o al error concreto). `advanced.texBinOverride` y
-`advanced.opencodeExeOverride` se aplican al resolver las rutas. El bloque de motor y el
-dot de IA de la status bar también son accionables (abren el diálogo del motor y Ajustes →
-IA).
+- La barra superior sustituye a las tres filas de 0.2: título, menú y toolbar.
+- El buscador central abre la paleta. Su desplegable lleva abrir carpeta, nuevo proyecto y
+  recientes.
+- El motor TeX se muestra en la barra de estado; el bloque es accionable y abre el
+  diálogo del motor.
+- `advanced.texBinOverride` y `advanced.pythonOverride` se aplican al resolver las rutas.
 
 ## Layout persistido
 
@@ -61,17 +63,19 @@ IA).
 
 ## Tema
 
-- `theme::apply` parte de `dark`/`light`/`system` y aplica `ui.accent` a `primary`,
-  `button_primary`, `ring`, `selection`, `list_active` y `sidebar_accent`.
-- `ui.theme = "system"` usa `Theme::sync_system_appearance(None, cx)`, que consulta
-  `cx.window_appearance()`. `AppRoot` observa `observe_window_appearance` y reaplica
-  `theme::apply` si el SO cambia de claro a oscuro con la app abierta.
-- Acento: presets en `theme::ACCENT_PRESETS` (azul, violeta, verde, ámbar, rojo) + hex
-  validado con `parse_accent`. Ajustes previsualiza en vivo y Cancelar/Escape restaura.
-- Tema claro: los alphas de `selection`/`list_active`/hover bajan respecto a dark para no
-  saturar fondos claros. Los paneles siguen leyendo tokens, sin hex.
-- `ui.reducedMotion` se proyecta en `App::set_reduce_motion` (diálogos/spinners del kit);
-  no se expone en Ajustes porque no hay animaciones propias en `lsx-ui`.
+- `theme::apply` sigue este orden: modo `dark`/`light`/`system` → `apply_palette` → `apply_accent`.
+- `apply_palette` fija las superficies VS Code «Dark Modern» / «Light Modern»:
+  - fondos: editor `#1F1F1F` y chrome `#181818` en oscuro; `#FFFFFF` y `#F8F8F8` en claro;
+  - bordes, texto, pestañas, scrollbars y radio de 4 px;
+  - colores del editor del kit (`highlight_theme.style`: fondo, línea activa, números).
+- Escala en `theme::tokens`: texto 11/12/13/14 y alturas 35 (título, cabecera, pestañas) y
+  22 (estado).
+- Acento por defecto `#0078D4`.
+  - Presets en `theme::ACCENT_PRESETS`, más hex libre validado con `parse_accent`.
+  - Ajustes previsualiza en vivo y Cancelar/Escape restaura.
+- `ui.theme = "system"` usa `Theme::sync_system_appearance`; `AppRoot` reaplica el tema
+  completo si el SO cambia de modo.
+- `ui.reducedMotion` se proyecta en `App::set_reduce_motion`.
 
 ## Ventana
 
@@ -82,11 +86,23 @@ IA).
   `settings.json`; el cierre también la persiste.
 - El título incluye el proyecto y un `•` cuando hay documentos sucios
   (`window.set_window_title` + `set_window_edited`).
-- Barra de menús de escritorio (`AppMenuBar`): **Archivo · Ver · Herramientas · Ayuda**;
-  los checks de paneles se reconstruyen al cambiar el layout (`sync_app_menus`).
-- Cierre seguro: `Window::on_window_should_close` detecta documentos sucios, abre
-  Guardar / Descartar / Cancelar y solo cierra con `force_close` tras la decisión.
-- Atajos: `Ctrl+B` compila, `Ctrl+S` guarda, `Ctrl+,` ajustes, `Ctrl+Q` sale, `F1` atajos.
+- Menús integrados en la barra superior (`AppMenuBar`): **Archivo · Editar · Ver ·
+  LaTeX · IA · Ayuda**.
+  - Editar usa las acciones del kit (deshacer, portapapeles, buscar), que atiende el editor
+    enfocado.
+  - Los checks de paneles se reconstruyen al cambiar el layout (`sync_app_menus`).
+- Cierre seguro: la X (`on_window_should_close`) y **Ctrl+Q / Salir** (`request_quit`)
+  detectan documentos sucios y abren Guardar / Descartar / Cancelar. En 0.2, Ctrl+Q cerraba
+  sin avisar.
+- Atajos:
+  - `Ctrl+B` compila, `Ctrl+S` guarda, `Ctrl+Alt+S` guarda todo, `Ctrl+W` cierra la pestaña;
+  - `Ctrl+P` abre un archivo del proyecto y `Ctrl+Shift+P` la paleta;
+  - `Ctrl+/` comenta o descomenta líneas con `%`, en la sangría mínima del bloque;
+  - `Ctrl+,` ajustes, `Ctrl+Q` sale, `F1` atajos;
+  - `Ctrl+Alt+F` arregla errores con IA y `Ctrl+Alt+N` abre una conversación nueva.
+- `Ctrl+S` tiene una sola acción (`panels::editor::SaveDocument`): el editor la registra y
+  el shell la atiende cuando el foco está fuera del editor. En 0.2 había dos acciones con
+  el mismo atajo.
 - `LSX_QA_OPEN_SETTINGS=1|ai` abre Ajustes (o su sección IA) al arrancar para capturas
   deterministas de QA; no se usa en producción.
 
@@ -98,14 +114,51 @@ IA).
   previsualización de tema/acento.
 - `AppRoot::apply_settings` reaplica tema/acento, autosave y modo/zoom del PDF en
   caliente; `latex.*` se propaga al `CompileController`.
-- La sección IA localiza `PortableRoot::detect()`/`agent/opencode.exe` y ofrece
-  `auth list`, `models`, `auth login` en consola, “Probar”, abrir `agent/` y abrir
-  `agent/opencode.json`. Los comandos corren en `background_spawn` con timeout
-  (ver [`04-chat-opencode`](04-chat-opencode.md)).
-- `Ctrl+Shift+P` abre la palette; `Ctrl+Alt+1..4` toggles de panel; `Ctrl+Alt+J` SyncTeX
-  forward; `Ctrl+S` guarda; `Ctrl+F`/`Ctrl+H` buscar/reemplazar.
-- La palette tiene 10 comandos fijos (se retiró la demo de permisos); no incluye tema, IA
-  ni ventana, que viven en Ajustes y en el menú.
+- La sección IA gestiona proveedores, claves (`config/secrets/ai.json`) y la prueba de modelo
+  (ver [`04-chat-agente`](04-chat-agente.md)).
+- La sección Editor expone fuente, tamaño (6–72), tabulación (1–16), ajuste de línea y
+  autoguardado; `apply_settings` los aplica en caliente (`EditorPanel::set_preferences`).
+- Paleta (`palette.rs`, `Ctrl+Shift+P`): 22 comandos con su atajo en la etiqueta. El
+  diálogo F1 se genera de la misma tabla (`PaletteCommand::shortcut`), así que no divergen.
+- Abrir archivo (`quick_open.rs`, `Ctrl+P`): recorre el proyecto (sin carpetas ocultas,
+  `node_modules`, `target` ni auxiliares de LaTeX; tope de 5000 archivos) y abre texto en
+  el editor y PDF en el visor. Sin proyecto abierto cae en la paleta.
+
+## Editor, visor y árbol (0.3)
+
+- **Archivos**: el árbol y `Ctrl+P` abren cualquier texto de `tree::TEXT_EXTENSIONS`
+  (`.tex`, `.sty`, `.cls`, `.bib`, `.txt`, `.md`, `latexmkrc`…). La familia TeX se resalta
+  como LaTeX; el resto como texto plano (`editor::language_for`).
+- **Pestañas**: icono por tipo y barra de acento arriba en la activa. El `absolute` de
+  taffy se ancla al padre directo, así que la barra vive en un prefijo de 32 px de alto y
+  la recorta el `overflow_hidden` de la pestaña.
+- **Breadcrumb**: `carpeta › archivo › sección`. La sección (`\chapter` … `\paragraph`,
+  sin las comentadas) se recalcula solo cuando cambia la línea del cursor
+  (`editor::section_at`).
+- **Bienvenida**: sin documentos, el editor muestra Empezar (nuevo proyecto, abrir carpeta,
+  abrir archivo, configurar IA), hasta 6 recientes vivos (`ProjectService::recent`) y los
+  atajos clave.
+- **Menús contextuales**:
+  - Editor: menú nativo del SO con cortar/copiar/pegar, comentar, ir al PDF, preguntar a la
+    IA sobre la selección (adjunta la selección como chip y enfoca el composer, sin enviar)
+    y arreglar errores con IA.
+  - Árbol: abrir, establecer como archivo principal (`.tex`; persiste
+    `latex.mainFile` y reorienta la compilación), copiar ruta absoluta o relativa, mostrar
+    en el Explorador, renombrar y eliminar.
+  - PDF: zoom, ajustar al ancho o a la página, página oscura y visor externo.
+  - Problemas: ir al código, copiar `archivo:línea: mensaje` y arreglar con IA.
+- **Visor PDF**: la toolbar flota centrada abajo y aparece al pasar el ratón; los avisos
+  van en el flash de la esquina y las métricas solo con `LSX_PDF_DEBUG=1`.
+  - `pdf.darkPages` invierte la luminosidad HSL conservando el tono, y el blanco del
+    papel pasa a `#1F1F1F`.
+  - Los renders hechos antes de cambiar el modo se descartan.
+- **Árbol**: las acciones de la cabecera flotan sobre el nombre y solo se ven al pasar el
+  ratón. El dock inferior abierto es redimensionable (`v_resizable` del kit, estado en
+  `TreePanel::split`).
+- **Textos**: menús, editor, bienvenida, visor, problemas, dock, símbolos y diálogos leen de
+  `ui.app.text.*` en `locales/es.yml`. Quedan fijos los textos que devuelven
+  `&'static str`: categorías de símbolos, presets de permisos del chat, mensajes de
+  SyncTeX y etiquetas del motor.
 
 ## Puntos de extensión
 

@@ -16,8 +16,9 @@
 //!   documentos personales, así que no viaja por defecto).
 //! - `--tex-dir=<ruta>` : usa otro TeX Live reducido en vez de `./tex`.
 //!
-//! Los binarios pesados (`tex/`, `agent/opencode.exe`) están fuera de git: este
-//! comando es el puente entre el repo y la carpeta que se empaqueta.
+//! Lo pesado (`tex/` y el agente montado en `agent/` por `make agent`) está
+//! fuera de git: este comando es el puente entre el repo y la carpeta que se
+//! empaqueta.
 
 use std::fs;
 use std::io::{BufWriter, Write};
@@ -73,12 +74,18 @@ pub fn run(args: &[String]) {
             ));
         }
     }
-    let agent_exe = repo.join("agent").join("opencode.exe");
-    if !agent_exe.is_file() {
-        fail(&format!(
-            "falta {} (el agente portable no está en git: cópialo o restaura el bundle)",
-            agent_exe.display()
-        ));
+    let agent_python = repo.join("agent").join("python").join("python.exe");
+    for required in [
+        agent_python.clone(),
+        repo.join("agent").join("lib").join("nas"),
+        repo.join("agent").join("lsx_agent").join("__main__.py"),
+    ] {
+        if !required.exists() {
+            fail(&format!(
+                "falta {}: monta el agente con `make agent` (scripts/get-agent.ps1)",
+                required.display()
+            ));
+        }
     }
     if !no_tex
         && !tex_dir
@@ -103,19 +110,25 @@ pub fn run(args: &[String]) {
     for binary in APP_BINARIES {
         copy_file(&release.join(binary), &app_dir.join(binary));
     }
-    // `xtask` y `chat-record` son herramientas de desarrollo: no viajan.
-    for file in ["opencode.exe", "opencode.json"] {
-        copy_file(
-            &repo.join("agent").join(file),
-            &app_dir.join("agent").join(file),
+    // `xtask` es una herramienta de desarrollo: no viaja.
+    // Agente LaTeX: Python embebido + nas-adk + paquete `lsx_agent`. El paquete
+    // se copia del repo (`python/lsx_agent`) para no empaquetar una copia vieja.
+    for dir in ["python", "lib"] {
+        copy_dir(
+            &repo.join("agent").join(dir),
+            &app_dir.join("agent").join(dir),
         );
     }
+    copy_dir(
+        &repo.join("python").join("lsx_agent"),
+        &app_dir.join("agent").join("lsx_agent"),
+    );
     // Icono del instalador/acceso directo (opcional en el repo).
     let icon = repo.join("installer").join("latex-studio.ico");
     if icon.is_file() {
         copy_file(&icon, &app_dir.join("latex-studio.ico"));
     }
-    // Skills del producto (las que ve opencode vía config/opencode.runtime.json).
+    // Skills del producto (las lee el agente con su tool `skill`).
     copy_dir(&repo.join("assets"), &app_dir.join("assets"));
     // Config de ejemplo: NO se copia `config/settings.json` (estado del usuario).
     create_dir(&app_dir.join("config"));

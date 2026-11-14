@@ -1,4 +1,4 @@
-//! Panel de chat IA (M1-E3..E6) — puerto de la UI aprobada en `spike-chat`.
+//! Panel de chat IA (M1-E3..E6): asistente LaTeX sobre el agente nas-adk.
 //!
 //! Lenguaje visual congelado en M0.5 (GitHub Copilot Chat): sin burbujas
 //! grandes, tool cards finas plegables, razonamiento plegado, composer con
@@ -13,11 +13,11 @@
 //! - El servicio corre en su propio hilo tokio; el puente es `async_channel` +
 //!   `cx.spawn` (el hilo UI nunca bloquea).
 //! - **Modo replay determinista** (`LSX_CHAT_REPLAY` o su alias
-//!   `LSX_SPIKE_REPLAY`): carga una fixture de `fixtures/opencode/events/` y
-//!   pinta la conversación sin server ni tokens (tests/capturas). Con
+//!   `LSX_SPIKE_REPLAY`): carga una fixture de `fixtures/agent/events/` y
+//!   pinta la conversación sin agente ni tokens (tests/capturas). Con
 //!   `LSX_CHAT_EXPAND=1` se despliegan razonamiento y tool cards.
-//! - `ai.autoStart`: si está activo y `agent/opencode.exe` existe, el
-//!   supervisor se lanza **al crear la app** (creación del panel); sin
+//! - `ai.autoStart`: si está activo y el intérprete del agente existe, el
+//!   agente se lanza **al crear la app** (creación del panel); sin
 //!   autoStart se arranca perezosamente en la primera acción
 //!   («Nueva sesión», enviar, «Arreglar errores»).
 //!
@@ -30,8 +30,8 @@
 //!   selección cuando el shell la aporta (`set_editor_context`).
 //! - **«Arreglar errores con IA» (M1-E5)**: compone el prompt con los
 //!   diagnósticos del [`ProblemsPanel`] + la cola del log en disco y lo envía
-//!   con el agente `latex-fix` (`lsx_chat::prompt::compose_fix_prompt`).
-//! - **Pickers (M1-E6)**: modelo (`/config/providers`), agente (`/agent`),
+//!   en modo `latex-fix` (`lsx_chat::prompt::compose_fix_prompt`).
+//! - **Pickers (M1-E6)**: modelo (proveedores configurados), modo,
 //!   sesiones (cambiar/borrar/nueva), abort; el dot IA del status bar se
 //!   actualiza vía [`StatusHandle`].
 
@@ -62,7 +62,7 @@ use lsx_chat::prompt::{
 };
 use lsx_chat::protocol::{AgentInfo, ModelEntry, ModelRef, PermissionReply};
 use lsx_chat::service::{ChatCmd, ChatConfig, ChatEvent, ChatService};
-use lsx_chat::supervisor::ServerState;
+use lsx_chat::sidecar::ServerState;
 use lsx_core::config::AiSettings;
 use lsx_core::root::PortableRoot;
 use lsx_latex::DiagnosticSeverity;
@@ -108,17 +108,34 @@ pub enum ChatPanelEvent {
 
 impl EventEmitter<ChatPanelEvent> for ChatPanel {}
 
+/// Nombre visible de un modo del agente (`build` → «Escribir»…).
+fn mode_label(name: &str) -> String {
+    match name {
+        "build" => "Escribir".to_owned(),
+        "latex-fix" => "Reparar".to_owned(),
+        "ask" => "Preguntar".to_owned(),
+        other => other.to_owned(),
+    }
+}
+
+/// Ruta canónica sin el prefijo verbatim `\\?\` de Windows.
+fn canonical(path: &Path) -> Option<PathBuf> {
+    let resolved = path.canonicalize().ok()?;
+    let text = resolved.to_string_lossy();
+    Some(PathBuf::from(text.strip_prefix(r"\\?\").unwrap_or(&text)))
+}
+
 /// Política de permisos del agente (botón «Permisos» del header).
 ///
 /// Se persiste en `ai.permissionPreset`. Con cualquier preset distinto de
 /// [`PermissionPreset::Ask`] el panel responde a `permission.asked` sin abrir
-/// el modal (con `always`, de modo que opencode deja de preguntar).
+/// el modal (con `always`, de modo que el agente deja de preguntar en la sesión).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PermissionPreset {
     /// Preguntar siempre (modal con diff por petición).
     #[default]
     Ask,
-    /// Aprobar las ediciones dentro del proyecto; el resto (bash, etc.) pregunta.
+    /// Aprobar las ediciones del proyecto (el agente no puede salir de él).
     ProjectEdits,
     /// Aprobar todo automáticamente.
     All,
@@ -155,10 +172,8 @@ impl PermissionPreset {
     /// Descripción para el tooltip.
     fn hint(self) -> &'static str {
         match self {
-            Self::Ask => "Permisos: cada edición o comando pide confirmación con su diff",
-            Self::ProjectEdits => {
-                "Permisos: las ediciones dentro del proyecto se aprueban solas (bash sigue preguntando)"
-            }
+            Self::Ask => "Permisos: cada edición pide confirmación con su diff",
+            Self::ProjectEdits => "Permisos: las ediciones del proyecto se aprueban solas",
             Self::All => "Permisos: todo se aprueba automáticamente (sin modales)",
         }
     }
@@ -175,9 +190,15 @@ impl PermissionPreset {
             Self::All => Some(PermissionReply::Always),
             Self::ProjectEdits => {
                 let is_edit = permission.eq_ignore_ascii_case("edit");
+                // El agente resuelve rutas canónicas; la UI puede tener la raíz
+                // sin canonicalizar (o con el prefijo `\\?\` de Windows).
                 let inside = filepath.is_some_and(|path| {
                     let path = Path::new(path);
                     path.starts_with(project_root)
+                        || match (canonical(path), canonical(project_root)) {
+                            (Some(path), Some(root)) => path.starts_with(root),
+                            _ => false,
+                        }
                 });
                 (is_edit && inside).then_some(PermissionReply::Always)
             }
@@ -187,18 +208,15 @@ impl PermissionPreset {
 
 /// Configuración de creación del panel (la construye el shell).
 pub struct ChatPanelConfig {
-    /// `agent/opencode.exe`.
-    pub exe: PathBuf,
-    /// `agent/opencode.json`.
-    pub config_json: PathBuf,
-    /// Raíz del proyecto activo (cwd del server, `?directory=` de sesiones).
+    /// Cómo lanzar el agente (intérprete, rutas, datos, secretos, skills).
+    /// Los campos de proyecto/modelo se completan en [`Self::service_config`].
+    pub launch: ChatConfig,
+    /// Raíz del proyecto activo (directorio de las sesiones).
     pub project_root: PathBuf,
     /// Nombre visible del proyecto (título de sesiones nuevas).
     pub project_name: String,
     /// `ai.autoStart`.
     pub auto_start: bool,
-    /// `ai.port` (None → puerto libre).
-    pub port: Option<u16>,
     /// `ai.model` (`provider/model`).
     pub model: Option<String>,
     /// `ai.agent`.
@@ -207,12 +225,6 @@ pub struct ChatPanelConfig {
     pub show_reasoning: bool,
     /// `ai.permissionPreset`.
     pub permission_preset: PermissionPreset,
-    /// Config efectiva de opencode (`config/opencode.runtime.json`).
-    pub runtime_config: PathBuf,
-    /// Skills del bundle (`assets/skills`) para `skills.paths`.
-    pub skills_dir: PathBuf,
-    /// `tex/bin/windows` + `agent` para el PATH del server.
-    pub path_prepend: Vec<PathBuf>,
     /// Handle de estado compartido (dot IA de la status bar).
     pub status: StatusHandle,
     /// Editor del shell (chips de contexto; opcional en tests).
@@ -235,20 +247,34 @@ impl ChatPanelConfig {
         problems: Option<Entity<ProblemsPanel>>,
     ) -> Self {
         let main_file = detect_main_file(project_root);
+        // Bundle (`agent/python`) o, en desarrollo, `python/.venv` del repo.
+        let (python, python_path) = if root.agent_python().is_file() {
+            (root.agent_python(), root.agent_python_path())
+        } else {
+            root.dev_agent()
+                .unwrap_or_else(|| (root.agent_python(), root.agent_python_path()))
+        };
+        let launch = ChatConfig {
+            python,
+            python_path,
+            agent_cwd: root.agent_dir(),
+            data_dir: root.agent_data_dir(),
+            secrets: Some(root.ai_secrets()),
+            skills_dir: Some(root.path().join("assets").join("skills")),
+            log_file: Some(root.logs_dir().join("agent.log")),
+            path_prepend: vec![root.tex_dir().join("bin").join("windows")],
+            record_dir: std::env::var_os("LSX_CHAT_RECORD").map(PathBuf::from),
+            ..ChatConfig::default()
+        };
         Self {
-            exe: root.opencode_exe(),
-            config_json: root.opencode_config(),
+            launch,
             project_root: project_root.to_path_buf(),
             project_name,
             auto_start: ai.auto_start,
-            port: ai.port,
             model: ai.model.clone(),
             agent: ai.agent.clone(),
             show_reasoning: ai.show_reasoning,
             permission_preset: PermissionPreset::from_setting(&ai.permission_preset),
-            runtime_config: root.config_dir().join("opencode.runtime.json"),
-            skills_dir: root.path().join("assets").join("skills"),
-            path_prepend: vec![root.tex_dir().join("bin").join("windows"), root.agent_dir()],
             status,
             editor,
             problems,
@@ -258,20 +284,17 @@ impl ChatPanelConfig {
 
     fn service_config(&self) -> ChatConfig {
         ChatConfig {
-            exe: self.exe.clone(),
-            config_json: self.config_json.clone(),
-            runtime_config: Some(self.runtime_config.clone()),
-            skills_dir: Some(self.skills_dir.clone()),
             project_cwd: self.project_root.clone(),
             project_name: self.project_name.clone(),
-            port: self.port,
-            // Password aleatorio por sesión (basic auth verificado live).
-            password: Some(lsx_chat::supervisor::random_password()),
             model: self.model.clone(),
             agent: self.agent.clone(),
-            path_prepend: self.path_prepend.clone(),
-            ..ChatConfig::default()
+            ..self.launch.clone()
         }
+    }
+
+    /// `true` si el intérprete del agente existe (bundle o entorno de desarrollo).
+    pub fn agent_available(&self) -> bool {
+        self.launch.python.is_file()
     }
 }
 
@@ -349,7 +372,10 @@ pub struct ChatPanel {
     service: Option<ChatService>,
     pump: Option<Task<()>>,
     server: ServerPhase,
-    port: Option<u16>,
+    /// Versión del agente que respondió a `hello`.
+    version: Option<String>,
+    /// Hay al menos un proveedor configurado (si no, se pide configurarlo).
+    has_providers: Option<bool>,
     /// Nombre de la fixture en modo replay.
     replay: Option<String>,
     textarea: Entity<TextareaState>,
@@ -409,7 +435,8 @@ impl ChatPanel {
             service: None,
             pump: None,
             server: ServerPhase::Idle,
-            port: None,
+            version: None,
+            has_providers: None,
             replay: None,
             textarea,
             scroll: ScrollHandle::default(),
@@ -451,7 +478,7 @@ impl ChatPanel {
         }));
         panel.service = Some(service);
 
-        if panel.config.auto_start && panel.config.exe.is_file() {
+        if panel.config.auto_start && panel.config.agent_available() {
             panel.send_command(ChatCmd::Start, cx);
             panel.server = ServerPhase::Starting;
         }
@@ -533,6 +560,23 @@ impl ChatPanel {
         cx.notify();
     }
 
+    /// «Preguntar a la IA sobre la selección»: adjunta archivo, línea y
+    /// selección como chips y deja el foco en el composer para escribir la
+    /// pregunta (no envía nada por sí solo).
+    pub fn ask_about(
+        &mut self,
+        file: String,
+        line: u32,
+        selection: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let selection = (!selection.trim().is_empty()).then_some(selection);
+        self.set_editor_context(Some((file, line)), selection, cx);
+        self.textarea
+            .update(cx, |state, cx| state.focus(window, cx));
+    }
+
     /// Fija los diagnósticos y la cola del log para «Arreglar errores».
     pub fn set_fix_context(
         &mut self,
@@ -570,8 +614,8 @@ impl ChatPanel {
                     ServerState::Starting | ServerState::Restarting { .. } => {
                         (ServerPhase::Starting, AiState::Starting)
                     }
-                    ServerState::Ready { port, .. } => {
-                        self.port = Some(port);
+                    ServerState::Ready { version } => {
+                        self.version = Some(version);
                         (ServerPhase::Ready, AiState::Ready)
                     }
                     ServerState::Error(message) => {
@@ -583,9 +627,11 @@ impl ChatPanel {
                 self.config.status.send(StatusMessage::Ai(ai));
             }
             ChatEvent::Ready {
-                port, model, agent, ..
+                version,
+                model,
+                agent,
             } => {
-                self.port = Some(port);
+                self.version = Some(version);
                 self.server = ServerPhase::Ready;
                 self.config.status.send(StatusMessage::Ai(AiState::Ready));
                 if model.is_some() {
@@ -628,6 +674,7 @@ impl ChatPanel {
             }
             ChatEvent::Providers(catalog) => {
                 self.models = catalog.model_entries();
+                self.has_providers = Some(!catalog.providers.is_empty());
             }
             ChatEvent::Agents(agents) => {
                 self.agents = agents;
@@ -701,7 +748,7 @@ impl ChatPanel {
         let file = entry.file();
         let request = PermissionRequest {
             id: entry.request_id.clone(),
-            title: format!("Permiso de {} · opencode", entry.permission),
+            title: format!("Permiso de {} · asistente", entry.permission),
             detail: format!("El agente quiere modificar {file}. Revisa el diff y decide."),
             diff: entry
                 .diff
@@ -792,7 +839,8 @@ impl ChatPanel {
         self.new_session(cx);
     }
 
-    fn new_session(&mut self, cx: &mut Context<Self>) {
+    /// Abre una conversación nueva (arranca el agente si hace falta).
+    pub fn new_session(&mut self, cx: &mut Context<Self>) {
         if self.replay.is_some() {
             return;
         }
@@ -1040,11 +1088,11 @@ impl ChatPanel {
         let model_full = self.model_full();
         h_flex()
             .flex_shrink_0()
-            .h(px(46.))
+            .h(px(crate::theme::tokens::HEADER_HEIGHT))
             .w_full()
             .items_center()
-            .gap(px(8.))
-            .px(px(14.))
+            .gap(px(2.))
+            .px(px(8.))
             .border_b_1()
             .border_color(ui.border)
             .child(
@@ -1087,18 +1135,17 @@ impl ChatPanel {
                     .disabled(self.replay.is_some())
                     .on_click(cx.listener(Self::on_new_session)),
             )
+            // Solo el punto: el texto del estado vive en el tooltip y en la
+            // barra de estado global (en 0.2 se cortaba en columnas estrechas).
             .child(
-                h_flex()
+                div()
+                    .id("chat-server-status")
                     .flex_shrink_0()
-                    .gap(px(6.))
-                    .items_center()
+                    .p(px(6.))
                     .child(div().size(px(7.)).rounded_full().bg(dot))
-                    .child(
-                        div()
-                            .text_size(px(tok::TEXT_SM))
-                            .text_color(ui.fg_muted)
-                            .child(SharedString::from(status)),
-                    ),
+                    .tooltip(move |window, cx| {
+                        gpui_kit::component::tooltip::Tooltip::new(status.clone()).build(window, cx)
+                    }),
             )
     }
 
@@ -1166,8 +1213,8 @@ impl ChatPanel {
     }
 
     /// Pide confirmación y revierte la sesión hasta `message_id` (M2): el
-    /// revert nativo de opencode deshace también los archivos que tocó el
-    /// agente desde ese punto.
+    /// agente restaura sus checkpoints, así que también se deshacen los
+    /// archivos que tocó desde ese punto.
     fn confirm_revert(&mut self, message_id: String, window: &mut Window, cx: &mut Context<Self>) {
         if self.replay.is_some() {
             return;
@@ -1213,7 +1260,7 @@ impl ChatPanel {
         });
     }
 
-    /// Deshace el último revert (`unrevert` de opencode).
+    /// Deshace el último revert (vuelve a aplicar los checkpoints).
     fn on_unrevert(&mut self, _: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
         if self.replay.is_some() {
             return;
@@ -1311,8 +1358,8 @@ impl ChatPanel {
 
     /// Selector de agente (`/agent`): build, plan, latex-fix…
     fn render_agent_menu(&self, _ui: &Ui, cx: &mut Context<Self>) -> impl IntoElement {
-        let label = self.agent_label();
-        let current = label.clone();
+        let current = self.agent_label();
+        let label = mode_label(&current);
         let agents = self.agents.clone();
         let weak = cx.weak_entity();
         Button::new("chat-agent")
@@ -1321,10 +1368,10 @@ impl ChatPanel {
             .compact()
             .label(label)
             .dropdown_caret(true)
-            .tooltip("Agente de opencode")
+            .tooltip("Modo del asistente")
             .disabled(self.replay.is_some())
             .dropdown_menu_with_anchor(Anchor::BottomRight, move |menu, _window, _cx| {
-                let mut menu = menu.label("Agente");
+                let mut menu = menu.label("Modo");
                 if agents.is_empty() {
                     let weak = weak.clone();
                     return menu.item(PopupMenuItem::new("Configurar IA en Ajustes…").on_click(
@@ -1339,7 +1386,11 @@ impl ChatPanel {
                     let name = agent.name.clone();
                     let checked = name == current;
                     let weak = weak.clone();
-                    menu = menu.item(PopupMenuItem::new(agent.label()).checked(checked).on_click(
+                    let item = match &agent.description {
+                        Some(description) => format!("{} · {description}", mode_label(&agent.name)),
+                        None => mode_label(&agent.name),
+                    };
+                    menu = menu.item(PopupMenuItem::new(item).checked(checked).on_click(
                         move |_, _window, cx| {
                             let name = name.clone();
                             let _ = weak.update(cx, |panel, cx| {
@@ -1448,6 +1499,7 @@ impl ChatPanel {
             .size_full()
             .items_center()
             .justify_center()
+            .px(px(24.))
             .gap(px(8.))
             .child(
                 Icon::new(IconName::MessagesSquare)
@@ -1462,9 +1514,11 @@ impl ChatPanel {
             )
             .child(
                 div()
+                    .max_w(px(320.))
+                    .text_center()
                     .text_size(px(tok::TEXT_SM))
                     .text_color(ui.fg_muted)
-                    .child("Pulsa «Nueva sesión» y escribe abajo para empezar."),
+                    .child("Pide un cambio, pregunta por un error o pulsa «Arreglar errores»."),
             )
     }
 
@@ -1588,7 +1642,7 @@ impl ChatPanel {
                     .text_size(px(tok::TEXT_XS))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(ui.fg_muted)
-                    .child("opencode"),
+                    .child("Asistente"),
             )
             .when_some(message.model.clone(), |this, model| {
                 this.child(self.chip(model, ui.fg_muted))
@@ -2189,31 +2243,22 @@ impl ChatPanel {
     /// Pista bajo el composer: modo replay, sesión viva o estado inicial.
     fn composer_hint(&self) -> String {
         if let Some(fixture) = &self.replay {
-            return format!("Replay estático · {fixture} — sin server ni tokens.");
+            return format!("Replay estático · {fixture} · sin agente ni tokens.");
         }
-        match (&self.conversation.session_id, self.port) {
-            (Some(session_id), Some(port)) => {
-                let tail: String = session_id
-                    .chars()
-                    .rev()
-                    .take(6)
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .rev()
-                    .collect();
-                format!(
-                    "Sesión …{tail} · 127.0.0.1:{port} — envía con el botón; Stop aborta el turno."
-                )
+        if !self.config.agent_available() {
+            return "El asistente no está instalado: reinstala LaTeX Studio o ejecuta `make agent`."
+                .to_owned();
+        }
+        if self.has_providers == Some(false) {
+            return "Configura un proveedor de IA en Ajustes › IA para empezar.".to_owned();
+        }
+        match self.server {
+            ServerPhase::Starting => "Arrancando el asistente…".to_owned(),
+            ServerPhase::Error => "El asistente no arrancó; revisa logs\\agent.log.".to_owned(),
+            _ if self.conversation.session_id.is_some() => {
+                "Enter envía · Shift+Enter salto de línea · Stop cancela el turno".to_owned()
             }
-            _ => match self.server {
-                ServerPhase::Starting => "Arrancando opencode…".to_owned(),
-                ServerPhase::Error => {
-                    "opencode no está disponible; revisa agent\\opencode.exe.".to_owned()
-                }
-                _ => {
-                    "Pulsa «Nueva sesión» para arrancar opencode; escribe abajo y envía.".to_owned()
-                }
-            },
+            _ => "Escribe abajo y pulsa Enter para empezar.".to_owned(),
         }
     }
 }
@@ -2325,8 +2370,8 @@ mod tests {
 
     /// Panel de chat en una ventana de test, dentro del chrome de hoja.
     ///
-    /// `auto_start` en `false` y un `opencode.exe` inexistente: el panel no
-    /// arranca server ni gasta tokens.
+    /// `auto_start` en `false` y un intérprete inexistente: el panel no
+    /// arranca el agente ni gasta tokens.
     fn with_chat<R>(
         cx: &mut TestAppContext,
         f: impl FnOnce(&mut VisualTestContext, Entity<ChatPanel>, Entity<TextareaState>) -> R,
@@ -2336,19 +2381,17 @@ mod tests {
         let (_, cx) = cx.add_window_view(|window, cx| {
             let (status, _rx) = channel();
             let config = ChatPanelConfig {
-                exe: PathBuf::from("agent/opencode-no-existe.exe"),
-                config_json: PathBuf::from("agent/opencode.json"),
+                launch: lsx_chat::service::ChatConfig {
+                    python: PathBuf::from("agent/python-no-existe.exe"),
+                    ..lsx_chat::service::ChatConfig::default()
+                },
                 project_root: PathBuf::from("."),
                 project_name: "test".to_owned(),
                 auto_start: false,
-                port: None,
                 model: None,
                 agent: "build".to_owned(),
                 show_reasoning: false,
                 permission_preset: PermissionPreset::Ask,
-                runtime_config: PathBuf::from("config/opencode.runtime.json"),
-                skills_dir: PathBuf::from("assets/skills"),
-                path_prepend: Vec::new(),
                 status,
                 editor: None,
                 problems: None,

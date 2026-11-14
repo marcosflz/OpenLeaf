@@ -1,7 +1,7 @@
 # LaTeX Studio / OpenLeaf — atajos de desarrollo y release (Windows + PowerShell)
 #
 #   make help          lista los comandos
-#   make agent         descarga agent/opencode.exe (v1.18.30) si falta
+#   make agent         monta agent/ (Python embebido + nas-adk + lsx_agent)
 #   make build         compila la app en release
 #   make dist          monta dist/latex-ide (sin tex; el instalador baja TinyTeX)
 #   make installer     compila dist/LaTeX-Studio-Setup.exe
@@ -9,31 +9,34 @@
 #   make gates         fmt + clippy + tests + OKF
 #   make publish       crea la release en GitHub (requiere gh autenticado)
 #
-# Requisitos: Rust/MSVC, Inno Setup 6, PowerShell 7 y `make` (GnuWin32 o similar).
+# Requisitos: Rust/MSVC, Inno Setup 6, PowerShell 7, uv y `make` (GnuWin32 o similar).
 
 PWSH          ?= pwsh
 CARGO         ?= cargo
-AGENT_VERSION ?= v1.18.30
 TAG           ?= v0.2.0
 SETUP         := dist/LaTeX-Studio-Setup.exe
 
-.PHONY: help agent build dist installer checksum release test fmt clippy kb gates clean run publish
+.PHONY: help agent agent-dev build dist installer checksum release test test-agent fmt clippy kb gates clean run publish
 
 help:
 	@echo LaTeX Studio - comandos:
-	@echo   make agent       descarga agent/opencode.exe $(AGENT_VERSION) si falta
+	@echo   make agent       monta agent/ (Python embebido + nas-adk + lsx_agent)
+	@echo   make agent-dev   entorno de desarrollo del agente (python/.venv con uv)
 	@echo   make build       compila latex-studio en release
 	@echo   make dist        monta dist/latex-ide (sin tex/)
 	@echo   make installer   compila $(SETUP)
 	@echo   make release     installer + SHA-256
 	@echo   make gates       fmt + clippy + tests + OKF
-	@echo   make test        cargo test --workspace
+	@echo   make test        cargo test --workspace + tests del agente
 	@echo   make run         abre la app en debug
 	@echo   make clean       limpia target/ y dist/
 	@echo   make publish     publica $(TAG) con gh (requiere auth)
 
 agent:
-	@$(PWSH) -NoProfile -File scripts/get-opencode.ps1 -Version $(AGENT_VERSION)
+	@$(PWSH) -NoProfile -File scripts/get-agent.ps1
+
+agent-dev:
+	@cd python && uv sync
 
 build:
 	@$(CARGO) build --release -p latex-studio
@@ -50,8 +53,11 @@ checksum: installer
 release: checksum
 	@$(PWSH) -NoProfile -Command "Write-Host 'Listo: $(SETUP)' -ForegroundColor Green; Get-Item '$(SETUP)' | Select-Object FullName,Length,LastWriteTime"
 
-test:
+test: test-agent
 	@$(CARGO) test --workspace
+
+test-agent:
+	@cd python && uv run ruff check lsx_agent tests && uv run pytest -q
 
 fmt:
 	@$(CARGO) fmt --check

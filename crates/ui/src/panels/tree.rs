@@ -38,12 +38,13 @@ use gpui_kit::component::{
     list::ListItem,
     menu::{PopupMenu, PopupMenuItem},
     notification::Notification,
+    resizable::{ResizableState, resizable_panel, v_resizable},
     tree::{TreeEntry, TreeEvent, TreeItem, TreeState, tree},
     v_flex,
 };
 use gpui_kit::{
-    AnyElement, App, AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle,
-    Focusable, FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton,
+    App, AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton,
     ParentElement as _, Render, SharedString, Styled as _, Subscription, Task, WeakEntity, Window,
     div, px,
 };
@@ -61,7 +62,7 @@ impl gpui_kit::EventEmitter<TreeFsEvent> for TreePanel {}
 /// Tipo de archivo abrible con doble clic/Enter (M1-F2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TreeOpenKind {
-    /// Documento LaTeX: lo abre el editor.
+    /// Archivo de texto (`.tex`, `.bib`, `.sty`, `.cls`, `.txt`…): lo abre el editor.
     Tex,
     /// PDF: lo abre el visor.
     Pdf,
@@ -70,12 +71,14 @@ pub enum TreeOpenKind {
 /// Evento del panel de árbol hacia el shell (M1-F2/F4).
 #[derive(Clone, Debug)]
 pub enum TreePanelEvent {
-    /// Doble clic o Enter sobre un `.tex`/`.pdf`: el shell lo abre en el
+    /// Doble clic o Enter sobre un archivo de texto o un `.pdf`: el shell lo abre en el
     /// editor o en el visor (el panel no hace I/O fuera de su proyecto).
     OpenFile { rel: PathBuf, kind: TreeOpenKind },
     /// El wizard «Nuevo proyecto» creó `project` y el panel lo adoptó: el
     /// shell debería recordarlo en `settings` y montarlo (editor/PDF root).
     ProjectCreated { project: ProjectInfo },
+    /// «Establecer como archivo principal» (menú contextual de un `.tex`).
+    SetMainFile { rel: String },
 }
 
 impl gpui_kit::EventEmitter<TreePanelEvent> for TreePanel {}
@@ -117,6 +120,8 @@ pub struct TreePanel {
     show_output: bool,
     /// Dock inferior (M2) que aloja PROBLEMAS · SALIDA · SÍMBOLOS.
     bottom: Option<Entity<BottomPanel>>,
+    /// Reparto árbol / dock inferior (arrastrable, como el panel de VS Code).
+    split: Entity<ResizableState>,
     /// Emisor del watcher (compartido con el guard vivo; se reutiliza al
     /// cambiar de proyecto).
     tx: Sender<Vec<FsEvent>>,
@@ -184,6 +189,7 @@ impl TreePanel {
             log: VecDeque::new(),
             show_output: true,
             bottom: None,
+            split: cx.new(|_| ResizableState::default()),
             tx,
             _filter_sub: filter_sub,
             _tree_sub: tree_sub,
@@ -422,6 +428,47 @@ impl TreePanel {
             rust_i18n::t!("ui.app.tree.opening", name = rel.display().to_string()).to_string();
         cx.emit(TreePanelEvent::OpenFile { rel, kind });
         cx.notify();
+    }
+
+    /// Ruta absoluta de una entrada (`id` relativo con `/`).
+    fn absolute(&self, id: &str) -> Option<PathBuf> {
+        let root = &self.project.as_ref()?.root;
+        Some(if id.is_empty() {
+            root.clone()
+        } else {
+            root.join(id)
+        })
+    }
+
+    /// Copia la ruta (absoluta o relativa) de una entrada al portapapeles.
+    fn copy_path(&mut self, id: &str, relative: bool, cx: &mut Context<Self>) {
+        let text = if relative {
+            id.to_owned()
+        } else {
+            match self.absolute(id) {
+                Some(path) => path.display().to_string(),
+                None => return,
+            }
+        };
+        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
+    }
+
+    /// Muestra la entrada en el Explorador de Windows (seleccionada).
+    fn reveal_in_explorer(&mut self, id: &str) {
+        let Some(path) = self.absolute(id) else {
+            return;
+        };
+        #[cfg(windows)]
+        {
+            let _ = std::process::Command::new("explorer.exe")
+                .arg(format!("/select,{}", path.display()))
+                .spawn();
+        }
+        #[cfg(not(windows))]
+        {
+            let target = path.parent().map(Path::to_path_buf).unwrap_or(path);
+            let _ = std::process::Command::new("xdg-open").arg(target).spawn();
+        }
     }
 
     /// Contrae todas las carpetas del árbol (la raíz queda expandida).
@@ -879,6 +926,7 @@ impl TreePanel {
             .h(px(tokens::BAR_HEIGHT))
             .px_2()
             .gap_1()
+            .relative()
             .items_center()
             .child(
                 div()
@@ -888,57 +936,77 @@ impl TreePanel {
                     .text_size(px(11.))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(cx.theme().muted_foreground)
-                    .child(rust_i18n::t!("ui.app.tree.header").to_string()),
+                    .child(
+                        self.project
+                            .as_ref()
+                            .map(|project| project.name.to_uppercase())
+                            .unwrap_or_else(|| rust_i18n::t!("ui.app.tree.header").to_string()),
+                    ),
             )
-            .child(header_action(
-                cx,
-                "tree-new-file",
-                IconName::FilePlus,
-                &rust_i18n::t!("ui.app.tree.new_file"),
-                cx.listener(|this, _, window, cx| {
-                    let parent = this.selection_dir(cx);
-                    this.open_create_dialog(window, cx, parent, EntryKind::File);
-                }),
-            ))
-            .child(header_action(
-                cx,
-                "tree-new-dir",
-                IconName::FolderPlus,
-                &rust_i18n::t!("ui.app.tree.new_dir"),
-                cx.listener(|this, _, window, cx| {
-                    let parent = this.selection_dir(cx);
-                    this.open_create_dialog(window, cx, parent, EntryKind::Dir);
-                }),
-            ))
-            .child(header_action(
-                cx,
-                "tree-refresh",
-                IconName::RefreshCw,
-                &rust_i18n::t!("ui.app.tree.refresh"),
-                cx.listener(|this, _, _, cx| this.refresh(cx)),
-            ))
-            .child(header_action(
-                cx,
-                "tree-collapse-all",
-                IconName::ListCollapse,
-                &rust_i18n::t!("ui.app.tree.collapse_all"),
-                cx.listener(|this, _, _, cx| this.collapse_all(cx)),
-            ))
-            .child(header_action(
-                cx,
-                "tree-toggle-output",
-                IconName::PanelBottom,
-                &rust_i18n::t!("ui.app.tree.toggle_output"),
-                cx.listener(|this, _, _, cx| {
-                    // Con el dock inferior montado, este botón lo colapsa.
-                    if let Some(bottom) = this.bottom.clone() {
-                        bottom.update(cx, |panel, cx| panel.toggle_open(cx));
-                    } else {
-                        this.show_output = !this.show_output;
-                    }
-                    cx.notify();
-                }),
-            ))
+            .child(
+                h_flex()
+                    .gap_1()
+                    .items_center()
+                    // Como en VS Code: las acciones solo se ven con el ratón sobre el árbol
+                    // y flotan sobre el nombre, que así usa todo el ancho en reposo.
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .right(px(6.))
+                    .pl_2()
+                    .bg(cx.theme().background.blend(cx.theme().border.opacity(0.5)))
+                    .opacity(0.)
+                    .group_hover(TREE_GROUP, |style| style.opacity(1.))
+                    .child(header_action(
+                        cx,
+                        "tree-new-file",
+                        IconName::FilePlus,
+                        &rust_i18n::t!("ui.app.tree.new_file"),
+                        cx.listener(|this, _, window, cx| {
+                            let parent = this.selection_dir(cx);
+                            this.open_create_dialog(window, cx, parent, EntryKind::File);
+                        }),
+                    ))
+                    .child(header_action(
+                        cx,
+                        "tree-new-dir",
+                        IconName::FolderPlus,
+                        &rust_i18n::t!("ui.app.tree.new_dir"),
+                        cx.listener(|this, _, window, cx| {
+                            let parent = this.selection_dir(cx);
+                            this.open_create_dialog(window, cx, parent, EntryKind::Dir);
+                        }),
+                    ))
+                    .child(header_action(
+                        cx,
+                        "tree-refresh",
+                        IconName::RefreshCw,
+                        &rust_i18n::t!("ui.app.tree.refresh"),
+                        cx.listener(|this, _, _, cx| this.refresh(cx)),
+                    ))
+                    .child(header_action(
+                        cx,
+                        "tree-collapse-all",
+                        IconName::ListCollapse,
+                        &rust_i18n::t!("ui.app.tree.collapse_all"),
+                        cx.listener(|this, _, _, cx| this.collapse_all(cx)),
+                    ))
+                    .child(header_action(
+                        cx,
+                        "tree-toggle-output",
+                        IconName::PanelBottom,
+                        &rust_i18n::t!("ui.app.tree.toggle_output"),
+                        cx.listener(|this, _, _, cx| {
+                            // Con el dock inferior montado, este botón lo colapsa.
+                            if let Some(bottom) = this.bottom.clone() {
+                                bottom.update(cx, |panel, cx| panel.toggle_open(cx));
+                            } else {
+                                this.show_output = !this.show_output;
+                            }
+                            cx.notify();
+                        }),
+                    )),
+            )
     }
 
     /// Filtro slim (24 px de alto) bajo el encabezado.
@@ -1116,8 +1184,8 @@ impl BasePanel for TreePanel {
     }
 
     fn set_active(&mut self, active: bool, _window: &mut Window, cx: &mut Context<Self>) {
-        // Ver la nota en `PlaceholderPanel`: la activación real del shell
-        // llega por clic (`Pane::activate_by_user`).
+        // La activación real del shell llega por clic (`Pane::activate_by_user`):
+        // el dock solo informa de qué pestaña está al frente.
         self.state.set_active(active, cx);
     }
 }
@@ -1127,8 +1195,8 @@ impl DockPanel for TreePanel {
         Some(self.pane_title().into())
     }
 
-    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        self.pane_title()
+    fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::panels::pane::pane_title_label(self.pane_title(), cx)
     }
 
     fn toolbar_buttons(
@@ -1251,68 +1319,83 @@ impl Render for TreePanel {
 
         // Dock inferior (M2): si el shell lo montó, la SALIDA y los problemas
         // viven ahí; si no (demos/spikes), se mantiene la sección propia.
-        let bottom: Option<AnyElement> = match &self.bottom {
-            Some(bottom) => {
-                let height = if bottom.read(cx).is_open() {
-                    tokens::OUTPUT_HEIGHT + 40.0
-                } else {
-                    tokens::OUTPUT_HEIGHT / 6.0
-                };
-                Some(
-                    div()
-                        .flex_none()
-                        .w_full()
-                        .h(px(height))
-                        .child(bottom.clone())
-                        .into_any_element(),
-                )
-            }
-            None if self.show_output => Some(self.render_output_panel(cx).into_any_element()),
-            None => None,
-        };
+        let explorer = v_flex()
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .bg(cx.theme().background.blend(cx.theme().border.opacity(0.5)))
+            .group(TREE_GROUP)
+            .child(self.render_section_header(cx))
+            .child(self.render_filter())
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
+                        if is_confirm_key(event) {
+                            this.open_selected(cx);
+                        }
+                    }))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, window, cx| {
+                            // El clic dentro de la lista deja el foco en
+                            // el árbol (flechas ↑/↓ ya funcionan) y no en
+                            // el contenedor de la hoja.
+                            cx.stop_propagation();
+                            cx.emit(PaneEvent::Activated(SlotKind::Tree));
+                            this.tree.update(cx, |state, cx| state.focus(window, cx));
+                        }),
+                    )
+                    .child(tree_element),
+            );
 
-        pane_container(SlotKind::Tree, cx)
+        let container = pane_container(SlotKind::Tree, cx)
             .flex()
             .flex_col()
             .track_focus(self.state.focus_handle())
             .on_mouse_down(
                 gpui_kit::MouseButton::Left,
                 cx.listener(|this, _, window, cx| this.activate_by_user(window, cx)),
-            )
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_h_0()
+            );
+
+        match &self.bottom {
+            // Dock abierto: separador arrastrable entre el árbol y el panel.
+            Some(bottom) if bottom.read(cx).is_open() => container.child(
+                div().flex_1().min_h_0().w_full().child(
+                    v_resizable("tree-bottom-split")
+                        .with_state(&self.split)
+                        .child(
+                            resizable_panel()
+                                .size_range(px(120.)..px(4000.))
+                                .child(explorer),
+                        )
+                        .child(
+                            resizable_panel()
+                                .size(px(tokens::OUTPUT_HEIGHT + 40.0))
+                                .size_range(px(80.)..px(4000.))
+                                .child(bottom.clone()),
+                        ),
+                ),
+            ),
+            // Dock plegado: solo la barra de pestañas.
+            Some(bottom) => container.child(explorer).child(
+                div()
+                    .flex_none()
                     .w_full()
-                    .bg(cx.theme().background.blend(cx.theme().border.opacity(0.5)))
-                    .child(self.render_section_header(cx))
-                    .child(self.render_filter())
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_h_0()
-                            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
-                                if is_confirm_key(event) {
-                                    this.open_selected(cx);
-                                }
-                            }))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _, window, cx| {
-                                    // El clic dentro de la lista deja el foco en
-                                    // el árbol (flechas ↑/↓ ya funcionan) y no en
-                                    // el contenedor de la hoja.
-                                    cx.stop_propagation();
-                                    cx.emit(PaneEvent::Activated(SlotKind::Tree));
-                                    this.tree.update(cx, |state, cx| state.focus(window, cx));
-                                }),
-                            )
-                            .child(tree_element),
-                    ),
-            )
-            .children(bottom)
+                    .h(px(tokens::OUTPUT_HEIGHT / 6.0))
+                    .child(bottom.clone()),
+            ),
+            None if self.show_output => container
+                .child(explorer)
+                .child(self.render_output_panel(cx)),
+            None => container.child(explorer),
+        }
     }
 }
+
+/// Grupo de hover del árbol (acciones de la cabecera).
+const TREE_GROUP: &str = "tree-section";
 
 // --- utilidades -------------------------------------------------------------
 
@@ -1325,6 +1408,35 @@ fn context_menu_for(weak: &WeakEntity<TreePanel>, entry: &TreeEntry, menu: Popup
     let create_in = if is_dir { id.clone() } else { parent_of(&id) };
 
     let mut menu = menu;
+    if !is_dir && let Some(kind) = open_kind(&id) {
+        {
+            let weak = weak.clone();
+            let rel = PathBuf::from(&id);
+            menu = menu.item(
+                PopupMenuItem::new(rust_i18n::t!("ui.app.tree.menu_open").to_string())
+                    .icon(IconName::FolderOpen)
+                    .on_click(move |_, _window, cx| {
+                        let rel = rel.clone();
+                        let _ = weak.update(cx, |view, view_cx| view.emit_open(rel, kind, view_cx));
+                    }),
+            );
+        }
+        if id.to_ascii_lowercase().ends_with(".tex") {
+            let weak = weak.clone();
+            let rel = id.clone();
+            menu = menu.item(
+                PopupMenuItem::new(rust_i18n::t!("ui.app.tree.menu_set_main").to_string())
+                    .icon(IconName::Star)
+                    .on_click(move |_, _window, cx| {
+                        let rel = rel.clone();
+                        let _ = weak.update(cx, |_view, view_cx| {
+                            view_cx.emit(TreePanelEvent::SetMainFile { rel })
+                        });
+                    }),
+            );
+        }
+        menu = menu.separator();
+    }
     if is_root {
         let weak = weak.clone();
         menu = menu.item(
@@ -1371,6 +1483,32 @@ fn context_menu_for(weak: &WeakEntity<TreePanel>, entry: &TreeEntry, menu: Popup
                     let _ = weak.update(cx, |view, view_cx| {
                         view.open_rename_dialog(window, view_cx, id.clone(), name.clone())
                     });
+                }),
+        );
+    }
+    menu = menu.separator();
+    for (label, relative) in [
+        (rust_i18n::t!("ui.app.tree.menu_copy_path"), false),
+        (rust_i18n::t!("ui.app.tree.menu_copy_rel_path"), true),
+    ] {
+        let weak = weak.clone();
+        let id = id.clone();
+        menu = menu.item(
+            PopupMenuItem::new(label.to_string())
+                .icon(IconName::Copy)
+                .on_click(move |_, _window, cx| {
+                    let _ = weak.update(cx, |view, view_cx| view.copy_path(&id, relative, view_cx));
+                }),
+        );
+    }
+    {
+        let weak = weak.clone();
+        let id = id.clone();
+        menu = menu.item(
+            PopupMenuItem::new(rust_i18n::t!("ui.app.tree.menu_reveal").to_string())
+                .icon(IconName::ExternalLink)
+                .on_click(move |_, _window, cx| {
+                    let _ = weak.update(cx, |view, _cx| view.reveal_in_explorer(&id));
                 }),
         );
     }
@@ -1423,15 +1561,45 @@ fn name_matches(filter_lower: &str, name: &str) -> bool {
     filter_lower.is_empty() || name.to_lowercase().contains(filter_lower)
 }
 
+/// Extensiones de texto que abre el editor (además de `.tex`).
+pub const TEXT_EXTENSIONS: &[&str] = &[
+    "tex",
+    "ltx",
+    "sty",
+    "cls",
+    "dtx",
+    "ins",
+    "def",
+    "cfg",
+    "clo",
+    "bib",
+    "bst",
+    "bbx",
+    "cbx",
+    "lbx",
+    "txt",
+    "md",
+    "csv",
+    "tsv",
+    "json",
+    "yml",
+    "yaml",
+    "toml",
+    "latexmkrc",
+    "lua",
+];
+
 /// Clase de archivo abrible según su extensión (M1-F2).
-fn open_kind(name: &str) -> Option<TreeOpenKind> {
-    let ext = name
-        .rsplit_once('.')
-        .map(|(_, ext)| ext.to_ascii_lowercase())
-        .unwrap_or_default();
+pub(crate) fn open_kind(name: &str) -> Option<TreeOpenKind> {
+    let file = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    let ext = match file.rsplit_once('.') {
+        Some((_, ext)) => ext.to_ascii_lowercase(),
+        // `latexmkrc` y similares no llevan extensión.
+        None => file.to_ascii_lowercase(),
+    };
     match ext.as_str() {
-        "tex" => Some(TreeOpenKind::Tex),
         "pdf" => Some(TreeOpenKind::Pdf),
+        ext if TEXT_EXTENSIONS.contains(&ext) => Some(TreeOpenKind::Tex),
         _ => None,
     }
 }
@@ -1474,7 +1642,7 @@ fn batch_changes_model(batch: &[FsEvent]) -> bool {
 }
 
 /// Icono por extensión (catálogo Lucide completo vía `AllAssets`).
-fn file_icon(name: &str) -> IconName {
+pub(crate) fn file_icon(name: &str) -> IconName {
     let ext = name
         .rsplit_once('.')
         .map(|(_, ext)| ext.to_ascii_lowercase())
@@ -1491,7 +1659,7 @@ fn file_icon(name: &str) -> IconName {
 }
 
 /// Color del icono de archivo: tintes sobrios por tipo (Seti de VS Code).
-fn file_icon_color(icon: IconName, cx: &App) -> gpui_kit::Hsla {
+pub(crate) fn file_icon_color(icon: IconName, cx: &App) -> gpui_kit::Hsla {
     match icon {
         IconName::FileCode => cx.theme().blue,
         IconName::FileImage => cx.theme().magenta,
@@ -1524,7 +1692,8 @@ fn header_action(
         .on_click(on_click)
 }
 
-/// Hora local `HH:MM:SS` para las líneas del log de SALIDA.
+/// Hora `HH:MM:SS` **UTC** para las líneas del log de SALIDA (sin dependencia de
+/// zona horaria; el reloj de la barra de estado no se usa aquí).
 fn stamp() -> String {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1561,11 +1730,15 @@ mod tests {
     }
 
     #[test]
-    fn openable_files_are_tex_and_pdf_only() {
+    fn text_files_open_in_the_editor_and_pdfs_in_the_viewer() {
         assert_eq!(open_kind("cv/main.tex"), Some(TreeOpenKind::Tex));
         assert_eq!(open_kind("MAIN.TeX"), Some(TreeOpenKind::Tex));
+        assert_eq!(open_kind("refs.bib"), Some(TreeOpenKind::Tex));
+        assert_eq!(open_kind("estilo/mio.sty"), Some(TreeOpenKind::Tex));
+        assert_eq!(open_kind("notas.md"), Some(TreeOpenKind::Tex));
+        assert_eq!(open_kind("latexmkrc"), Some(TreeOpenKind::Tex));
         assert_eq!(open_kind("out/cv.pdf"), Some(TreeOpenKind::Pdf));
-        assert_eq!(open_kind("notas.md"), None);
+        assert_eq!(open_kind("figuras/plot.png"), None);
         assert_eq!(open_kind("sin-extension"), None);
     }
 

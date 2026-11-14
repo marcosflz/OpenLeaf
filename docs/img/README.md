@@ -5,7 +5,7 @@ personales**: el CV de ejemplo usa nombre, correo y teléfono ficticios.
 
 | Archivo | Escena |
 | --- | --- |
-| `hero-dark.png` | Cuatro paneles con `fixtures/projects/cv-sidebar` copiado a `workspace/demo-cv` (PDF precompilado desde `fixtures/pdf/cv-sidebar.pdf`). Tema oscuro y un turno real del chat: se le pide a opencode un resumen de `main.tex` y lee el archivo con sus herramientas. |
+| `hero-dark.png` | Cuatro paneles (UI 0.3) con `fixtures/projects/cv-sidebar` copiado a `workspace/demo-cv` (PDF precompilado desde `fixtures/pdf/cv-sidebar.pdf`). Tema oscuro; el chat reproduce `fixtures/agent/events/agent-fix-edit.jsonl` con `LSX_CHAT_REPLAY` (lee, edita con permiso y explica, sin gastar tokens). |
 | `problems.png` | `fixtures/projects/broken-undefined` compilado con **Compilar**; el `LogParser` reporta la secuencia indefinida en el panel de problemas y en la barra de estado. |
 
 ## Regenerarlas

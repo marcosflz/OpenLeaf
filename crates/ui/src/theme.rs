@@ -1,4 +1,8 @@
-//! Tema del shell (M1-A3 / P2-UI-2): temas dark/light/system y acento.
+//! Tema del shell (M1-A3 / P2-UI-2 / 0.3): temas dark/light/system y acento.
+//!
+//! Desde 0.3 el shell sigue la estética minimalista de VS Code «Modern»:
+//! superficies neutras ([`apply_palette`]), un único acento (`#0078D4` por
+//! defecto) y una escala fija de tamaños y alturas ([`tokens`]).
 //!
 //! Reglas:
 //! - El look aprobado del explorer (M0.5) no se toca: filas de 22 px, hover
@@ -13,15 +17,35 @@
 //!   consultan las animaciones propias del kit (diálogos, spinners).
 
 use gpui_kit::component::{Theme, ThemeMode};
-use gpui_kit::{App, Hsla, rgb};
+use gpui_kit::{App, Hsla, px, rgb, rgba};
 use lsx_core::config::Settings;
 
 /// Tokens y métricas visuales aprobadas en el pase de diseño M0.5.
 pub mod tokens {
-    /// Acento del producto (`#4C8DFF`).
-    pub const ACCENT_HEX: &str = "#4C8DFF";
+    /// Acento del producto (`#0078D4`, el azul de VS Code).
+    pub const ACCENT_HEX: &str = "#0078D4";
     /// Acento como entero `0x00RRGGBB` (para `rgb()`).
-    pub const ACCENT_RGB: u32 = 0x004C_8DFF;
+    pub const ACCENT_RGB: u32 = 0x0000_78D4;
+
+    // --- Escala tipográfica (px lógicos) ---------------------------------------
+    /// Etiquetas pequeñas: cabeceras de panel en mayúsculas, chips, contadores.
+    pub const TEXT_XS: f32 = 11.;
+    /// Texto secundario: barra de estado, tooltips, metadatos.
+    pub const TEXT_SM: f32 = 12.;
+    /// Texto base de la interfaz.
+    pub const TEXT_MD: f32 = 13.;
+    /// Títulos de diálogo y énfasis.
+    pub const TEXT_LG: f32 = 14.;
+
+    // --- Alturas del chrome ----------------------------------------------------
+    /// Barra de título (con menús integrados).
+    pub const TITLE_HEIGHT: f32 = 35.;
+    /// Cabecera de panel y barra de pestañas.
+    pub const HEADER_HEIGHT: f32 = 35.;
+    /// Barra de estado.
+    pub const STATUS_HEIGHT: f32 = 22.;
+    /// Radio de esquinas de controles.
+    pub const RADIUS: f32 = 4.;
 
     /// Alto de fila del árbol (VS Code Explorer ≈ 22 px lógicos).
     pub const TREE_ROW_HEIGHT: f32 = 22.;
@@ -68,7 +92,7 @@ impl AccentPreset {
 pub const ACCENT_PRESETS: [AccentPreset; 5] = [
     AccentPreset {
         id: "blue",
-        hex: "#4C8DFF",
+        hex: "#0078D4",
     },
     AccentPreset {
         id: "violet",
@@ -91,6 +115,7 @@ pub const ACCENT_PRESETS: [AccentPreset; 5] = [
 /// Tema oscuro por defecto (antes de cargar `Settings`).
 pub fn init(cx: &mut App) {
     Theme::change(ThemeMode::Dark, None, cx);
+    apply_palette(cx);
 }
 
 /// Aplica el tema que dictan los ajustes: modo + acento + tokens de listas.
@@ -100,7 +125,124 @@ pub fn apply(settings: &Settings, cx: &mut App) {
     // y respeta la preferencia del usuario aunque solo edite settings.json.
     cx.set_reduce_motion(settings.ui.reduced_motion);
     apply_mode(&settings.ui.theme, cx);
+    apply_palette(cx);
     apply_accent(&settings.ui.accent, cx);
+}
+
+/// Superficies neutras al estilo VS Code «Dark Modern» / «Light Modern».
+///
+/// Se aplica tras cada cambio de modo (el kit restaura sus colores al cambiar
+/// de tema). Solo toca superficies, bordes y texto; los semánticos (éxito,
+/// aviso, peligro) y el acento quedan como estén.
+pub fn apply_palette(cx: &mut App) {
+    Theme::update(cx, |theme| {
+        let p = if theme.is_dark() { DARK } else { LIGHT };
+        let c = &mut theme.colors;
+        c.background = hex(p.editor);
+        c.foreground = hex(p.text);
+        c.muted = hex(p.muted);
+        c.muted_foreground = hex(p.text_muted);
+        c.border = hex(p.border);
+        c.window_border = hex(p.border);
+        c.title_bar = hex(p.chrome);
+        c.title_bar_border = hex(p.border);
+        c.status_bar = hex(p.chrome);
+        c.status_bar_border = hex(p.border);
+        c.sidebar = hex(p.chrome);
+        c.sidebar_border = hex(p.border);
+        c.sidebar_foreground = hex(p.text);
+        c.tab_bar = hex(p.chrome);
+        c.tab = hex(p.chrome);
+        c.tab_foreground = hex(p.text_muted);
+        c.tab_active = hex(p.editor);
+        c.tab_active_foreground = hex(p.text_strong);
+        c.list = hex(p.chrome);
+        c.list_even = hex(p.chrome);
+        c.list_head = hex(p.chrome);
+        c.popover = hex(p.popover);
+        c.popover_foreground = hex(p.text);
+        c.input = hex(p.input_border);
+        c.secondary = hex(p.control);
+        c.secondary_hover = hex(p.control_hover);
+        c.secondary_active = hex(p.control_hover);
+        c.secondary_foreground = hex(p.text);
+        c.scrollbar = Hsla::transparent_black();
+        c.scrollbar_thumb = rgba(p.scroll_thumb).into();
+        c.scrollbar_thumb_hover = rgba(p.scroll_thumb_hover).into();
+        c.group_box = hex(p.chrome);
+        // El editor del kit pinta con su tema de resaltado, no con `background`.
+        let mut highlight = (*theme.highlight_theme).clone();
+        highlight.style.editor_background = Some(hex(p.editor));
+        highlight.style.editor_gutter_background = Some(hex(p.editor));
+        highlight.style.editor_active_line = Some(hex(p.active_line));
+        highlight.style.editor_line_number = Some(hex(p.line_number));
+        highlight.style.editor_active_line_number = Some(hex(p.text_strong));
+        theme.highlight_theme = std::sync::Arc::new(highlight);
+        theme.radius = px(tokens::RADIUS);
+        theme.radius_lg = px(tokens::RADIUS + 2.);
+    });
+}
+
+/// Paleta neutra de un modo (valores `0xRRGGBB`, salvo los `rgba`).
+#[derive(Clone, Copy)]
+struct Palette {
+    /// Fondo del editor y de la pestaña activa.
+    editor: u32,
+    /// Título, laterales, pestañas inactivas y barra de estado.
+    chrome: u32,
+    border: u32,
+    text: u32,
+    text_strong: u32,
+    text_muted: u32,
+    muted: u32,
+    popover: u32,
+    input_border: u32,
+    control: u32,
+    control_hover: u32,
+    scroll_thumb: u32,
+    scroll_thumb_hover: u32,
+    active_line: u32,
+    line_number: u32,
+}
+
+const DARK: Palette = Palette {
+    editor: 0x1F1F1F,
+    chrome: 0x181818,
+    border: 0x2B2B2B,
+    text: 0xCCCCCC,
+    text_strong: 0xFFFFFF,
+    text_muted: 0x9D9D9D,
+    muted: 0x2B2B2B,
+    popover: 0x202020,
+    input_border: 0x3C3C3C,
+    control: 0x313131,
+    control_hover: 0x3C3C3C,
+    scroll_thumb: 0x7979_7966,
+    scroll_thumb_hover: 0x6464_64B3,
+    active_line: 0x282828,
+    line_number: 0x6E7681,
+};
+
+const LIGHT: Palette = Palette {
+    editor: 0xFFFFFF,
+    chrome: 0xF8F8F8,
+    border: 0xE5E5E5,
+    text: 0x3B3B3B,
+    text_strong: 0x1F1F1F,
+    text_muted: 0x616161,
+    muted: 0xEDEDED,
+    popover: 0xFFFFFF,
+    input_border: 0xCECECE,
+    control: 0xE5E5E5,
+    control_hover: 0xCCCCCC,
+    scroll_thumb: 0x6464_6433,
+    scroll_thumb_hover: 0x6464_6466,
+    active_line: 0xF3F3F3,
+    line_number: 0x6E7681,
+};
+
+fn hex(value: u32) -> Hsla {
+    Hsla::from(rgb(value))
 }
 
 /// Cambia solo el modo del tema (`dark`/`light`/`system`).
@@ -182,7 +324,7 @@ mod tests {
 
     #[test]
     fn accent_parsing_matches_the_core_parser() {
-        assert!(accent_from_hex("#4C8DFF").is_some());
+        assert!(accent_from_hex("#0078D4").is_some());
         assert!(accent_from_hex("azul").is_none());
         assert!(accent_from_hex("#12345").is_none());
     }
@@ -230,7 +372,7 @@ mod tests {
 
     #[test]
     fn the_accent_token_is_the_approved_one() {
-        assert_eq!(tokens::ACCENT_HEX, "#4C8DFF");
-        assert_eq!(tokens::ACCENT_RGB, 0x004C_8DFF);
+        assert_eq!(tokens::ACCENT_HEX, "#0078D4");
+        assert_eq!(tokens::ACCENT_RGB, 0x0000_78D4);
     }
 }

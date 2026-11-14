@@ -1,4 +1,4 @@
-//! Replayer mínimo (M0-S4): lee la fixture real grabada con `chat-record`
+//! Replayer mínimo (M0-S4): lee la fixture real grabada en su día de opencode
 //! (mini) y verifica la tabla I-4 evento→dominio con evidencia concreta:
 //! streaming de texto, ciclo de tool, permiso de edición y `session.idle`.
 
@@ -29,7 +29,7 @@ fn mini_fixture_replays_into_domain_events() {
     let dir = events_dir();
     let Some(path) = find_mini() else {
         eprintln!(
-            "SKIP: aún no hay fixture mini en {} — se graba con `cargo run -p lsx-chat --bin chat-record`",
+            "SKIP: aún no hay fixture mini en {} — fixtures históricas de opencode 1.18.30",
             dir.display()
         );
         return;
@@ -147,7 +147,7 @@ fn mini_fixture_replays_into_domain_events() {
     let asked_index = events
         .iter()
         .position(|event| matches!(event, SpikeEvent::PermissionAsked { .. }))
-        .expect("permission.asked presente (prompt 2 de chat-record)");
+        .expect("permission.asked presente (prompt 2 de la grabación)");
     let replied_index = events
         .iter()
         .position(|event| matches!(event, SpikeEvent::PermissionReplied { .. }))

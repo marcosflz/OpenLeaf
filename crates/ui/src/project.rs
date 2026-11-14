@@ -50,6 +50,11 @@ impl ProjectService {
         self.0.open(path)
     }
 
+    /// Recientes vivos, el más nuevo primero (pantalla de bienvenida).
+    pub fn recent(&self, settings: &Settings) -> Vec<ProjectInfo> {
+        self.0.recent(settings)
+    }
+
     /// Candidatos del diálogo "Abrir proyecto": recientes vivos + `workspace/`.
     pub fn candidates(&self, settings: &Settings) -> Vec<ProjectInfo> {
         self.0.candidates(settings)

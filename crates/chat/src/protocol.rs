@@ -1,19 +1,14 @@
-//! Superficie del protocolo de opencode (API v1, binario 1.18.30).
+//! Formas de datos compartidas con el agente LaTeX.
 //!
-//! Único módulo a tocar si se migra a OpenCode v2 (riesgo R5). Todo lo aquí
-//! declarado está verificado contra el server real y su `/doc` (OpenAPI 3.1)
-//! durante M0-S4; las fixtures viven en `fixtures/opencode/events/`.
-//!
-//! Forma del stream SSE observada (1.18.30): solo líneas `data: {json}\n\n`;
-//! **no** hay `event:`/`id:`/`retry:` ni soporte de `Last-Event-ID` (la
-//! reconexión pierde el gap → refetch con `GET /session/:id/message`).
-//! El `type` va dentro del JSON: `{ "id": "evt_…", "type": "session.idle",
-//! "properties": { … } }`.
+//! El agente (`python/lsx_agent`) conserva a propósito la forma de la API v1
+//! de opencode para eventos (`{type, properties}`), sesiones, catálogo de
+//! proveedores e historial (`[{info, parts}]`). Así las fixtures, el reductor y
+//! la tabla I-4 siguen valiendo. Ver `docs/decisions/ADR-001-agente-nas-adk.md`.
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 
-/// Nombres exactos de eventos SSE v1 relevantes (verificados con fixtures).
+/// Nombres exactos de los eventos (forma v1 de opencode, emitida por el agente).
 pub mod event_type {
     pub const SERVER_CONNECTED: &str = "server.connected";
     pub const SERVER_HEARTBEAT: &str = "server.heartbeat";
@@ -34,7 +29,7 @@ pub mod event_type {
     pub const FILE_EDITED: &str = "file.edited";
 }
 
-/// Línea de fixture (`fixtures/opencode/events/*.jsonl`) — **forma contractual**.
+/// Línea de fixture (`fixtures/*/events/*.jsonl`) — **forma contractual**.
 ///
 /// Una línea por evento SSE: `{"event": "<tipo>", "data": <data crudo>}`.
 /// `data` es el JSON parseado de la línea `data:` tal cual llegó del server;
@@ -68,18 +63,7 @@ impl SseRecord {
     }
 }
 
-/// Mensaje SSE crudo tal como salió del parser (`data` sin re-parsear).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RawSseMessage {
-    /// Campo `event:` si existe (opencode 1.18.30 no lo emite).
-    pub event: Option<String>,
-    /// Campo `id:` si existe (opencode 1.18.30 no lo emite).
-    pub id: Option<String>,
-    /// Data concatenada (posiblemente multilínea con `\n`).
-    pub data: String,
-}
-
-/// `GET /global/health`.
+/// Respuesta a `hello`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Health {
     pub healthy: bool,
@@ -331,27 +315,7 @@ pub fn parse_agents(value: &Value) -> Vec<AgentInfo> {
     agents
 }
 
-/// Body de `POST /session/:id/prompt_async` (subconjunto).
-pub fn prompt_body(model: Option<&ModelRef>, text: &str) -> Value {
-    let model = model.map(|m| json!({ "providerID": m.provider_id, "modelID": m.model_id }));
-    json!({
-        "model": model,
-        "parts": [ { "type": "text", "text": text } ],
-    })
-}
-
-/// Igual que [`prompt_body`] + `agent` (M1-E5: `latex-fix`, `build`, `plan`).
-pub fn prompt_body_with(model: Option<&ModelRef>, agent: Option<&str>, text: &str) -> Value {
-    let mut body = prompt_body(model, text);
-    if let Some(agent) = agent.filter(|agent| !agent.is_empty())
-        && let Some(object) = body.as_object_mut()
-    {
-        object.insert("agent".to_owned(), json!(agent));
-    }
-    body
-}
-
-/// Respuesta a `POST /session/:id/permissions/:permissionID` (v1, deprecated pero viva).
+/// Respuesta a un permiso (`permission.reply`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PermissionReply {
     Once,
