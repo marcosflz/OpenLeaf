@@ -2,10 +2,13 @@
 
     python -P -s -m lsx_agent --data-dir <dir> [--secrets <json>] [--skills <dir>] [--log <file>]
     python -P -s -m lsx_agent --probe <proveedor/modelo> --data-dir <dir> [--secrets <json>]
+    python -P -s -m lsx_agent --list-models <proveedor> --data-dir <dir> [--secrets <json>]
 
 Sin ``--probe`` sirve el protocolo NDJSON por stdio. Con ``--probe`` hace una
 petición mínima al modelo e imprime ``{"ok": true, "text": ...}`` o
-``{"ok": false, "error": ...}`` (botón «Probar» de Ajustes › IA).
+``{"ok": false, "error": ...}`` (botón «Probar» de Ajustes › IA). Con
+``--list-models`` imprime el catálogo del proveedor, ``{"ok": true, "models":
+[{"id", "name"}]}``, para elegir los modelos activos.
 """
 
 from __future__ import annotations
@@ -17,7 +20,7 @@ import sys
 from pathlib import Path
 
 from .protocol import Transport
-from .providers import Secrets, build_model
+from .providers import Secrets, build_model, list_models
 from .server import AgentServer, configure_logging
 
 
@@ -54,7 +57,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--skills", type=Path, default=None, help="assets/skills")
     parser.add_argument("--log", type=Path, default=None, help="archivo de log (o stderr)")
     parser.add_argument("--probe", default=None, help="prueba proveedor/modelo y termina")
+    parser.add_argument("--list-models", default=None, help="lista los modelos de un proveedor")
     args = parser.parse_args(argv)
+
+    if args.list_models:
+        result = list_models(args.list_models, Secrets(args.secrets))
+        sys.stdout.write(json.dumps(result, ensure_ascii=False) + "\n")
+        return 0
 
     if args.probe:
         result = asyncio.run(probe(args.probe, Secrets(args.secrets)))

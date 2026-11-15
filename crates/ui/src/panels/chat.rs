@@ -835,6 +835,40 @@ impl ChatPanel {
         cx.notify();
     }
 
+    /// Relee el catálogo de proveedores (Ajustes cambió claves, interruptores o modelos
+    /// activos). Si el modelo de la sesión ya no está, el servicio elige otro.
+    pub fn refresh_providers(&mut self, cx: &mut Context<Self>) {
+        if self.replay.is_none() && self.service.is_some() {
+            self.send_command(ChatCmd::RefreshProviders, cx);
+        }
+    }
+
+    /// Aplica el modelo predeterminado elegido en Ajustes (`proveedor/modelo`), como si se
+    /// hubiera elegido en el selector del chat.
+    pub fn apply_default_model(&mut self, model: &str, cx: &mut Context<Self>) {
+        if self.replay.is_some()
+            || self.service.is_none()
+            || self.model_full().as_deref() == Some(model)
+        {
+            return;
+        }
+        let Some((provider, model_id)) = model.split_once('/').filter(|(_, m)| !m.is_empty())
+        else {
+            return;
+        };
+        self.conversation.set_model(Some(ModelRef::new(
+            provider.to_owned(),
+            model_id.to_owned(),
+        )));
+        self.send_command(
+            ChatCmd::SetModel {
+                provider: provider.to_owned(),
+                model: model_id.to_owned(),
+            },
+            cx,
+        );
+    }
+
     fn on_new_session(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
         self.new_session(cx);
     }

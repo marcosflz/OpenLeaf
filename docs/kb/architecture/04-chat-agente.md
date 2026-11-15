@@ -2,7 +2,7 @@
 id: kb/architecture/chat-agente
 title: El chat habla con un agente LaTeX propio (nas-adk) por stdio
 status: stable
-updated: 2026-11-13
+updated: 2026-11-15
 source:
   - crates/chat/src/sidecar.rs
   - crates/chat/src/service.rs
@@ -10,6 +10,7 @@ source:
   - crates/ui/src/panels/chat.rs
   - crates/ui/src/ai_setup.rs
   - crates/ui/src/settings_ui.rs
+  - crates/ui/src/settings_providers.rs
   - python/lsx_agent/server.py
   - python/lsx_agent/tools.py
   - python/lsx_agent/providers.py
@@ -87,17 +88,30 @@ Métodos:
 
 ## Proveedores
 
-`opencode`, `openrouter`, `anthropic` y `claude-code`:
+Dos familias, como en nexus, cada una con su sección de Ajustes:
 
-- **Sin default**: el catálogo solo incluye los configurados.
-- **Credenciales**:
-  - claves en `config/secrets/ai.json` (`{"<id>": {"apiKey": "..."}}`) o en la variable de
-    entorno correspondiente;
-  - `claude-code` requiere el CLI `claude` autenticado por la persona y es de uso personal y
+| Familia | Proveedores | Backend nas-adk |
+|---|---|---|
+| **Claves de API** | `openrouter`, `openai`, `anthropic`, `gemini`, `deepseek`, `lmstudio` | `openrouter`, `anthropic` y `openai-compatible` con URL fija (solo `lmstudio` la deja cambiar) |
+| **Suscripciones** | `opencode` (OpenCode Go, con clave), `claude-code` (CLI `claude`) | `opencode`, `claude-code` |
+
+- **Varios activos a la vez y sin default impuesto**: el catálogo solo incluye proveedores
+  con credencial, activados y con algún modelo activo. Lleva `kind` por proveedor.
+- **`config/secrets/ai.json`** por proveedor:
+  `{"apiKey", "enabled", "baseUrl", "models": [{"id", "name"}]}`.
+  - Sin `models` se usan los sugeridos de la tabla.
+  - Una lista de cadenas es el formato antiguo y se suma a los sugeridos.
+  - La clave también vale por variable de entorno.
+  - `claude-code` requiere el CLI `claude` autenticado por la persona; es de uso personal y
     local.
-- **Ajustes › IA**: guarda y quita claves y prueba un modelo (`python -m lsx_agent --probe`).
-- **Paridad**: la tabla de Rust (`ai_setup::PROVIDERS`) replica la de `providers.py`, y un test
-  comprueba que coinciden.
+- **Predeterminado**: `ai.model` de `settings.json` (★ en los chips). Si el modelo de la
+  sesión deja de estar activo, `resolve_initial_model` elige otro (`ProviderCatalog::offers`).
+- **Ajustes** (`ai_setup.rs` + `settings_providers.rs`): guarda claves, interruptor y modelos
+  al momento. El listado de modelos va por `python -m lsx_agent --list-models <id>` y la
+  prueba por `--probe`; los dos en segundo plano. Tras cada cambio el chat recibe
+  `ChatCmd::RefreshProviders`.
+- **Paridad**: la tabla de Rust (`ai_setup::PROVIDERS`) replica la de `providers.py` (orden,
+  familia, modelos, variable de entorno, clave y URL), y un test lo comprueba.
 
 ## Revert
 

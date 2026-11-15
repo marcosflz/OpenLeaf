@@ -601,16 +601,15 @@ impl AppRoot {
             }));
         // Hook de QA/visual: abre Ajustes al arrancar sin depender de clics
         // sintéticos. No se usa en producción salvo que se exporte la variable.
+        // Valores: `ai`, `api`, `subscriptions` o cualquier otro (Apariencia).
         if let Some(open) = std::env::var_os("LSX_QA_OPEN_SETTINGS") {
-            let ai = open.to_string_lossy() == "ai";
+            let section = open.to_string_lossy().into_owned();
             let weak = cx.weak_entity();
             window.defer(cx, move |window, cx| {
                 let _ = weak.update(cx, |root, cx| {
-                    if ai {
-                        root.open_ai_settings(window, cx);
-                    } else {
-                        root.open_settings(window, cx);
-                    }
+                    let settings = root.settings.clone();
+                    let weak = cx.weak_entity();
+                    settings_ui::open_named_dialog(window, cx, settings, weak, &section);
                 });
             });
         }
@@ -1037,6 +1036,13 @@ impl AppRoot {
 
     fn chat_panel(&self, cx: &App) -> Entity<ChatPanel> {
         self.chat.read(cx).chat.clone()
+    }
+
+    /// Ajustes cambió proveedores o modelos activos (`config/secrets/ai.json`): el chat
+    /// relee su catálogo sin reiniciar el agente.
+    pub fn refresh_ai_providers(&mut self, cx: &mut Context<Self>) {
+        let chat = self.chat_panel(cx);
+        chat.update(cx, |panel, cx| panel.refresh_providers(cx));
     }
 
     /// «Arreglar errores con IA»: muestra el chat y envía el prompt de reparación.
@@ -2012,7 +2018,13 @@ impl AppRoot {
         cx: &mut Context<Self>,
     ) {
         self.warnings = settings.validate();
+        let model_changed = settings.ai.model != self.settings.ai.model;
         self.settings = settings;
+        // El predeterminado (`ai.model`) es también el modelo del chat, como su selector.
+        if model_changed && let Some(model) = self.settings.ai.model.clone() {
+            let chat = self.chat_panel(cx);
+            chat.update(cx, |panel, cx| panel.apply_default_model(&model, cx));
+        }
         // El diálogo de ajustes también puede cambiar `latex.syncScroll`.
         self.sync_scroll = self.settings.latex.sync_scroll;
         self.latex_settings = bridge_latex_settings(&self.settings.latex);

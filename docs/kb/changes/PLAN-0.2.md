@@ -250,6 +250,19 @@ verified: true
   - textos `&'static str` restantes.
 - **Evidencia:** CHG-0017.
 
+### P3-AI-2 — Gestión de proveedores y modelos (Claves de API y Suscripciones)
+
+- **Estado:** ✅ DONE (2026-11-15)
+- **Entrega:**
+  - secciones de Ajustes separadas para claves de API y suscripciones;
+  - varios proveedores activos, interruptor y modelos activos por proveedor;
+  - catálogo real del proveedor para elegir modelos y ★ predeterminado;
+  - el chat relee el catálogo al cambiar la configuración.
+- **Pendiente:**
+  - revisión manual del selector de modelos con un proveedor real;
+  - ChatGPT como suscripción, cuando nas-adk lo soporte.
+- **Evidencia:** CHG-0018.
+
 ## Orden de ejecución del swarm
 
 1. **O-KB** (orchestrator): OKF + AGENTS + plan. ✅

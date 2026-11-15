@@ -1,22 +1,36 @@
-//! Conexión de IA desde Ajustes: proveedores, claves y prueba de conexión.
+//! Gestión de proveedores y modelos de IA (Ajustes › Claves de API y Suscripciones).
 //!
-//! El agente LaTeX (`python -m lsx_agent`, sobre nas-adk) admite cuatro
-//! proveedores y ninguno viene impuesto:
+//! El agente LaTeX (`python -m lsx_agent`, sobre nas-adk) admite varias familias de
+//! proveedores y ninguna viene impuesta. Como en nexus, se separan en dos:
 //!
-//! | id            | Qué es                              | Credencial                          |
-//! |---------------|-------------------------------------|-------------------------------------|
-//! | `opencode`    | OpenCode Go                         | clave en `config/secrets/ai.json`   |
-//! | `openrouter`  | OpenRouter                          | clave en `config/secrets/ai.json`   |
-//! | `anthropic`   | API de Anthropic                    | clave en `config/secrets/ai.json`   |
-//! | `claude-code` | Suscripción de Claude (CLI `claude`)| sesión del CLI (`claude auth login`)|
+//! | Familia            | Proveedores                                              | Credencial                         |
+//! |--------------------|----------------------------------------------------------|------------------------------------|
+//! | **Claves de API**  | OpenRouter, OpenAI, Anthropic, Gemini, DeepSeek, LM Studio | clave en `config/secrets/ai.json`  |
+//! | **Suscripciones**  | OpenCode Go (clave), Claude (CLI `claude`)               | clave o sesión del CLI             |
 //!
-//! Las claves también se aceptan por variable de entorno (`OPENCODE_API_KEY`,
-//! …). La tabla [`PROVIDERS`] replica la de `python/lsx_agent/providers.py`;
-//! un test comprueba que no divergen.
+//! Varios proveedores pueden estar activos a la vez. Por proveedor se guarda, en
+//! `config/secrets/ai.json`:
 //!
-//! La UI **nunca** bloquea el hilo de GPUI: [`AiSetup::probe`] lanza un
-//! proceso y el llamador la ejecuta dentro de `cx.background_spawn`. El resto
-//! de operaciones solo leen o escriben un JSON pequeño.
+//! ```json
+//! {"<id>": {"apiKey": "...", "enabled": true, "baseUrl": "...",
+//!           "models": [{"id": "...", "name": "..."}]}}
+//! ```
+//!
+//! - `enabled`: interruptor; `false` lo saca del chat sin borrar la clave.
+//! - `models`: los modelos **activos** (los que ve el selector del chat). Sin la clave se usan
+//!   los sugeridos de [`PROVIDERS`]; una lista de cadenas es el formato antiguo («modelos
+//!   extra») y se suma a los sugeridos.
+//! - `baseUrl`: solo en proveedores con URL configurable (LM Studio).
+//!
+//! El modelo **predeterminado** es `ai.model` de `config/settings.json` (`proveedor/modelo`).
+//!
+//! Las claves también se aceptan por variable de entorno (`OPENROUTER_API_KEY`, …). La tabla
+//! [`PROVIDERS`] replica la de `python/lsx_agent/providers.py`; un test comprueba que no
+//! divergen, y otro que las dos leen igual los modelos activos.
+//!
+//! La UI **nunca** bloquea el hilo de GPUI: [`AiSetup::probe`] y [`AiSetup::list_models`]
+//! lanzan un proceso y el llamador las ejecuta dentro de `cx.background_spawn`. El resto de
+//! operaciones solo leen o escriben un JSON pequeño.
 
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
@@ -24,10 +38,42 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use lsx_core::root::PortableRoot;
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 
 /// Presupuesto del botón «Probar» (una petición mínima al modelo).
 pub const PROBE_TIMEOUT: Duration = Duration::from_secs(90);
+/// Presupuesto de la consulta del catálogo de un proveedor (el agente corta a los 12 s).
+pub const LIST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Máximo de modelos activos por proveedor (protege el selector del chat).
+pub const MAX_ACTIVE_MODELS: usize = 500;
+
+/// Familia de un proveedor: cada una tiene su sección en Ajustes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ProviderKind {
+    /// Servicios que se pagan por uso con una clave de API.
+    Api,
+    /// Planes personales (OpenCode Go, Claude…).
+    Subscription,
+}
+
+impl ProviderKind {
+    /// Valor de `kind` en el catálogo del agente.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Api => "api",
+            Self::Subscription => "subscription",
+        }
+    }
+}
+
+/// Cómo se conecta un proveedor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkFlow {
+    /// Con una clave de API (opcional si `needs_key` es `false`).
+    Key,
+    /// Con la sesión del CLI `claude` (`claude auth login`).
+    Cli,
+}
 
 /// Proveedor de IA que el agente sabe usar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,56 +82,149 @@ pub struct ProviderSpec {
     pub id: &'static str,
     /// Nombre visible.
     pub name: &'static str,
+    /// Sección de Ajustes donde aparece.
+    pub kind: ProviderKind,
+    /// Cómo se vincula.
+    pub link: LinkFlow,
     /// Variable de entorno con la clave (`None`: sin clave, p. ej. `claude-code`).
     pub env_key: Option<&'static str>,
-    /// Modelos ofrecidos `(id, nombre)`.
+    /// La clave es obligatoria.
+    pub needs_key: bool,
+    /// Modelos sugeridos `(id, nombre)`: los activos hasta que la persona elija.
     pub models: &'static [(&'static str, &'static str)],
-    /// Ayuda corta para Ajustes.
+    /// Ayuda corta para la tarjeta.
     pub help: &'static str,
+    /// Pista del campo de clave.
+    pub placeholder: &'static str,
+    /// URL base propuesta, si la persona puede cambiarla (`None`: fija).
+    pub custom_base_url: Option<&'static str>,
+    /// Se puede pedir su catálogo de modelos.
+    pub can_list: bool,
 }
 
-/// Proveedores soportados (mismo orden y modelos que `providers.py`).
-pub const PROVIDERS: [ProviderSpec; 4] = [
-    ProviderSpec {
-        id: "opencode",
-        name: "OpenCode Go",
-        env_key: Some("OPENCODE_API_KEY"),
-        models: &[
-            ("deepseek-v4.1-flash", "DeepSeek V4.1 Flash"),
-            ("glm-5.3-flash", "GLM 5.3 Flash"),
-            ("qwen3.8-flash", "Qwen 3.8 Flash"),
-        ],
-        help: "Clave de opencode.ai (suscripción Go).",
-    },
+/// Proveedores soportados (mismo orden, ids y modelos que `providers.py`).
+pub const PROVIDERS: [ProviderSpec; 8] = [
+    // --- Claves de API --------------------------------------------------------------
     ProviderSpec {
         id: "openrouter",
         name: "OpenRouter",
+        kind: ProviderKind::Api,
+        link: LinkFlow::Key,
         env_key: Some("OPENROUTER_API_KEY"),
+        needs_key: true,
         models: &[("openrouter/auto", "Auto (OpenRouter elige)")],
-        help: "Clave de openrouter.ai; admite cualquier modelo «proveedor/modelo».",
+        help: "Clave de openrouter.ai; da acceso a modelos de muchos proveedores.",
+        placeholder: "sk-or-v1-…",
+        custom_base_url: None,
+        can_list: true,
+    },
+    ProviderSpec {
+        id: "openai",
+        name: "OpenAI",
+        kind: ProviderKind::Api,
+        link: LinkFlow::Key,
+        env_key: Some("OPENAI_API_KEY"),
+        needs_key: true,
+        models: &[("gpt-5.5", "GPT-5.5")],
+        help: "Clave de platform.openai.com (facturación por uso).",
+        placeholder: "sk-…",
+        custom_base_url: None,
+        can_list: true,
     },
     ProviderSpec {
         id: "anthropic",
         name: "Anthropic (API)",
+        kind: ProviderKind::Api,
+        link: LinkFlow::Key,
         env_key: Some("ANTHROPIC_API_KEY"),
+        needs_key: true,
         models: &[
             ("claude-sonnet-5-5", "Claude Sonnet 5.5"),
             ("claude-opus-5-5", "Claude Opus 5.5"),
             ("claude-haiku-5-5", "Claude Haiku 5.5"),
         ],
         help: "Clave de la API de Anthropic (facturación por uso).",
+        placeholder: "sk-ant-…",
+        custom_base_url: None,
+        can_list: true,
+    },
+    ProviderSpec {
+        id: "gemini",
+        name: "Google Gemini",
+        kind: ProviderKind::Api,
+        link: LinkFlow::Key,
+        env_key: Some("GEMINI_API_KEY"),
+        needs_key: true,
+        models: &[("gemini-3-flash", "Gemini 3 Flash")],
+        help: "Clave de Google AI Studio.",
+        placeholder: "AIza…",
+        custom_base_url: None,
+        can_list: true,
+    },
+    ProviderSpec {
+        id: "deepseek",
+        name: "DeepSeek",
+        kind: ProviderKind::Api,
+        link: LinkFlow::Key,
+        env_key: Some("DEEPSEEK_API_KEY"),
+        needs_key: true,
+        models: &[
+            ("deepseek-chat", "DeepSeek Chat"),
+            ("deepseek-reasoner", "DeepSeek Reasoner"),
+        ],
+        help: "Clave de platform.deepseek.com.",
+        placeholder: "sk-…",
+        custom_base_url: None,
+        can_list: true,
+    },
+    ProviderSpec {
+        id: "lmstudio",
+        name: "LM Studio / OpenAI-compatible local",
+        kind: ProviderKind::Api,
+        link: LinkFlow::Key,
+        env_key: Some("LMSTUDIO_API_KEY"),
+        needs_key: false,
+        models: &[("local-model", "Modelo cargado en el servidor")],
+        help: "Servidor local compatible con OpenAI (LM Studio, Ollama…). La clave es opcional.",
+        placeholder: "opcional",
+        custom_base_url: Some("http://localhost:1234/v1"),
+        can_list: true,
+    },
+    // --- Suscripciones -------------------------------------------------------------
+    ProviderSpec {
+        id: "opencode",
+        name: "OpenCode Go",
+        kind: ProviderKind::Subscription,
+        link: LinkFlow::Key,
+        env_key: Some("OPENCODE_API_KEY"),
+        needs_key: true,
+        models: &[
+            ("deepseek-v4.1-flash", "DeepSeek V4.1 Flash"),
+            ("glm-5.3-flash", "GLM 5.3 Flash"),
+            ("qwen3.8-flash", "Qwen 3.8 Flash"),
+        ],
+        help: "Tu suscripción de OpenCode Go, con la clave de opencode.ai/console/go.",
+        placeholder: "clave de opencode.ai/console/go",
+        custom_base_url: None,
+        can_list: true,
     },
     ProviderSpec {
         id: "claude-code",
         name: "Claude (suscripción)",
+        kind: ProviderKind::Subscription,
+        link: LinkFlow::Cli,
         env_key: None,
+        needs_key: false,
         models: &[
             ("default", "Modelo por defecto del CLI"),
             ("sonnet", "Sonnet"),
             ("opus", "Opus"),
             ("haiku", "Haiku"),
         ],
-        help: "Usa tu CLI `claude` ya autenticado (`claude auth login`). Uso personal y local.",
+        help: "Tu plan de Claude (Pro o Max) a través del CLI `claude`. Uso personal y local.",
+        placeholder: "",
+        custom_base_url: None,
+        can_list: true,
     },
 ];
 
@@ -94,14 +233,51 @@ pub fn provider(id: &str) -> Option<&'static ProviderSpec> {
     PROVIDERS.iter().find(|spec| spec.id == id)
 }
 
+/// Proveedores de una familia, en el orden de la tabla.
+pub fn providers_of(kind: ProviderKind) -> impl Iterator<Item = &'static ProviderSpec> {
+    PROVIDERS.iter().filter(move |spec| spec.kind == kind)
+}
+
+/// Modelo activo de un proveedor (id que se envía + nombre visible).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelChoice {
+    pub id: String,
+    pub name: String,
+}
+
+impl ModelChoice {
+    pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
+        let id = id.into();
+        let name = name.into();
+        let name = if name.trim().is_empty() {
+            id.clone()
+        } else {
+            name
+        };
+        Self { id, name }
+    }
+}
+
 /// Estado de un proveedor para pintar en Ajustes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderStatus {
     pub spec: &'static ProviderSpec,
-    /// Hay credencial (clave guardada, variable de entorno o CLI presente).
+    /// Listo para el chat: con credencial, activado y con algún modelo activo.
     pub configured: bool,
+    /// Hay credencial (clave guardada, variable de entorno, CLI presente o, sin clave
+    /// obligatoria, el proveedor añadido).
+    pub has_credential: bool,
+    /// Interruptor de la tarjeta.
+    pub enabled: bool,
+    /// La persona lo añadió (hay entrada en `ai.json`) o tiene credencial: se muestra su
+    /// tarjeta en «Claves de API».
+    pub added: bool,
     /// De dónde sale la credencial, para explicarlo en la UI.
     pub source: CredentialSource,
+    /// Modelos activos.
+    pub models: Vec<ModelChoice>,
+    /// URL base efectiva (solo proveedores con URL configurable).
+    pub base_url: Option<String>,
 }
 
 /// Origen de la credencial de un proveedor.
@@ -138,16 +314,19 @@ pub enum AiSetupError {
     #[error("no se pudo ejecutar el asistente: {0}")]
     Spawn(String),
     /// El proceso no terminó dentro del presupuesto.
-    #[error("la prueba tardó más de {0} s y se canceló")]
+    #[error("la operación tardó más de {0} s y se canceló")]
     Timeout(u64),
     /// El proceso terminó con error.
-    #[error("la prueba falló (código {code:?}): {message}")]
+    #[error("la operación falló (código {code:?}): {message}")]
     Command {
         /// Código de salida (puede faltar si lo mató una señal).
         code: Option<i32>,
         /// Últimas líneas de stderr/stdout, ya recortadas.
         message: String,
     },
+    /// El proveedor rechazó la petición (clave inválida, sin red…).
+    #[error("{0}")]
+    Provider(String),
     /// Error de E/S.
     #[error("no se pudo usar {path}: {error}")]
     Io {
@@ -164,7 +343,7 @@ struct CommandOutput {
     stdout: String,
 }
 
-/// Configuración de IA de una instalación: intérprete del agente y claves.
+/// Configuración de IA de una instalación: intérprete del agente y proveedores.
 #[derive(Debug, Clone)]
 pub struct AiSetup {
     root: PortableRoot,
@@ -213,46 +392,34 @@ impl AiSetup {
         &self.secrets
     }
 
-    /// Estado de los cuatro proveedores (lectura local, sin red).
+    /// Estado de todos los proveedores (lectura local, sin red).
     pub fn status(&self) -> Vec<ProviderStatus> {
         let secrets = self.load_secrets();
         PROVIDERS
             .iter()
-            .map(|spec| {
-                let source = credential_source(spec, &secrets);
-                ProviderStatus {
-                    spec,
-                    configured: source != CredentialSource::None,
-                    source,
-                }
+            .map(|spec| provider_status(spec, &secrets))
+            .collect()
+    }
+
+    /// Modelos `proveedor/modelo` activos de los proveedores listos para el chat.
+    pub fn models(&self) -> Vec<String> {
+        self.status()
+            .into_iter()
+            .filter(|status| status.configured)
+            .flat_map(|status| {
+                status
+                    .models
+                    .into_iter()
+                    .map(move |model| format!("{}/{}", status.spec.id, model.id))
             })
             .collect()
     }
 
-    /// Modelos `proveedor/modelo` de los proveedores configurados.
-    pub fn models(&self) -> Vec<String> {
-        let secrets = self.load_secrets();
-        let mut models = Vec::new();
-        for status in self.status().into_iter().filter(|s| s.configured) {
-            for (model, _) in status.spec.models {
-                models.push(format!("{}/{model}", status.spec.id));
-            }
-            for extra in extra_models(&secrets, status.spec.id) {
-                let id = format!("{}/{extra}", status.spec.id);
-                if !models.contains(&id) {
-                    models.push(id);
-                }
-            }
-        }
-        models
-    }
-
-    /// Guarda (o sustituye) la clave de un proveedor con API.
+    /// Guarda (o sustituye) la clave de un proveedor con clave. Si es nuevo, nace activado
+    /// con sus modelos sugeridos.
     pub fn save_key(&self, provider_id: &str, key: &str) -> Result<(), AiSetupError> {
-        let spec = provider(provider_id).ok_or_else(|| {
-            AiSetupError::Invalid(format!("proveedor desconocido: {provider_id}"))
-        })?;
-        if spec.env_key.is_none() {
+        let spec = known(provider_id)?;
+        if spec.link != LinkFlow::Key {
             return Err(AiSetupError::Invalid(format!(
                 "{} no usa clave: inicia sesión con `claude auth login`",
                 spec.name
@@ -264,20 +431,13 @@ impl AiSetup {
                 "la clave parece incompleta (sin espacios, al menos 8 caracteres)".to_owned(),
             ));
         }
-        let mut secrets = self.load_secrets();
-        let entry = secrets
-            .entry(spec.id.to_owned())
-            .or_insert_with(|| Value::Object(Map::new()));
-        if !entry.is_object() {
-            *entry = Value::Object(Map::new());
-        }
-        if let Some(object) = entry.as_object_mut() {
-            object.insert("apiKey".to_owned(), Value::String(key.to_owned()));
-        }
-        self.store_secrets(&secrets)
+        self.update_entry(spec, |entry| {
+            entry.insert("apiKey".to_owned(), Value::String(key.to_owned()));
+        })
     }
 
-    /// Borra la clave guardada de un proveedor (las variables de entorno no se tocan).
+    /// Borra la clave guardada de un proveedor y conserva el resto (modelos, interruptor).
+    /// Las variables de entorno no se tocan.
     pub fn remove_key(&self, provider_id: &str) -> Result<(), AiSetupError> {
         let mut secrets = self.load_secrets();
         if let Some(object) = secrets.get_mut(provider_id).and_then(Value::as_object_mut) {
@@ -287,6 +447,112 @@ impl AiSetup {
             }
         }
         self.store_secrets(&secrets)
+    }
+
+    /// Añade un proveedor sin clave obligatoria (LM Studio) o deja constancia de uno con
+    /// interruptor propio. No toca lo que ya hubiera.
+    pub fn add_provider(&self, provider_id: &str) -> Result<(), AiSetupError> {
+        let spec = known(provider_id)?;
+        self.update_entry(spec, |_| {})
+    }
+
+    /// Quita un proveedor por completo: clave, modelos e interruptor.
+    pub fn remove_provider(&self, provider_id: &str) -> Result<(), AiSetupError> {
+        let mut secrets = self.load_secrets();
+        if secrets.remove(provider_id).is_some() {
+            self.store_secrets(&secrets)?;
+        }
+        Ok(())
+    }
+
+    /// Activa o desactiva un proveedor sin borrar su credencial.
+    pub fn set_enabled(&self, provider_id: &str, enabled: bool) -> Result<(), AiSetupError> {
+        let spec = known(provider_id)?;
+        self.update_entry(spec, |entry| {
+            entry.insert("enabled".to_owned(), Value::Bool(enabled));
+        })
+    }
+
+    /// Fija los modelos activos (orden incluido). Debe quedar al menos uno.
+    pub fn set_models(
+        &self,
+        provider_id: &str,
+        models: &[ModelChoice],
+    ) -> Result<Vec<ModelChoice>, AiSetupError> {
+        let spec = known(provider_id)?;
+        let models = normalize_models(models);
+        if models.is_empty() {
+            return Err(AiSetupError::Invalid(
+                "elige al menos un modelo activo".to_owned(),
+            ));
+        }
+        if models.len() > MAX_ACTIVE_MODELS {
+            return Err(AiSetupError::Invalid(format!(
+                "como mucho {MAX_ACTIVE_MODELS} modelos activos por proveedor"
+            )));
+        }
+        let list: Vec<Value> = models
+            .iter()
+            .map(|model| json!({"id": model.id, "name": model.name}))
+            .collect();
+        self.update_entry(spec, |entry| {
+            entry.insert("models".to_owned(), Value::Array(list));
+        })?;
+        Ok(models)
+    }
+
+    /// Cambia la URL base de un proveedor que la admite (`http(s)://…`). Vacía: la propuesta.
+    pub fn set_base_url(&self, provider_id: &str, url: &str) -> Result<(), AiSetupError> {
+        let spec = known(provider_id)?;
+        if spec.custom_base_url.is_none() {
+            return Err(AiSetupError::Invalid(format!(
+                "{} usa una URL fija",
+                spec.name
+            )));
+        }
+        let url = url.trim().trim_end_matches('/');
+        if !url.is_empty()
+            && (!(url.starts_with("http://") || url.starts_with("https://"))
+                || url.chars().any(char::is_whitespace)
+                || url.len() > 300)
+        {
+            return Err(AiSetupError::Invalid(
+                "la URL base debe empezar por http:// o https://".to_owned(),
+            ));
+        }
+        self.update_entry(spec, |entry| {
+            if url.is_empty() {
+                entry.remove("baseUrl");
+            } else {
+                entry.insert("baseUrl".to_owned(), Value::String(url.to_owned()));
+            }
+        })
+    }
+
+    /// Catálogo completo del proveedor (con la credencial guardada) para elegir los modelos
+    /// activos. Bloquea: ejecútalo en segundo plano.
+    pub fn list_models(&self, provider_id: &str) -> Result<Vec<ModelChoice>, AiSetupError> {
+        let spec = known(provider_id)?;
+        if !spec.can_list {
+            return Err(AiSetupError::Invalid(
+                "este proveedor no permite listar modelos: escribe su nombre".to_owned(),
+            ));
+        }
+        let reply = self.run_agent(&["--list-models", spec.id], LIST_TIMEOUT)?;
+        if reply.get("ok").and_then(Value::as_bool) != Some(true) {
+            return Err(AiSetupError::Provider(
+                reply
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("respuesta vacía")
+                    .to_owned(),
+            ));
+        }
+        Ok(reply
+            .get("models")
+            .and_then(Value::as_array)
+            .map(|items| parse_models(items))
+            .unwrap_or_default())
     }
 
     /// Prueba un modelo `proveedor/modelo` con una petición mínima (gasta muy
@@ -301,10 +567,47 @@ impl AiSetup {
             .ok_or_else(|| {
                 AiSetupError::Invalid(format!("modelo no válido: «{model}» (proveedor/modelo)"))
             })?;
+        let target = format!("{provider_id}/{model_id}");
+        let reply = self.run_agent(&["--probe", &target], PROBE_TIMEOUT)?;
+        if reply.get("ok").and_then(Value::as_bool) == Some(true) {
+            Ok(reply
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned())
+        } else {
+            Err(AiSetupError::Command {
+                code: None,
+                message: reply
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("respuesta vacía")
+                    .to_owned(),
+            })
+        }
+    }
+
+    /// Abre una consola con `claude auth login` para vincular la suscripción de Claude. El
+    /// inicio de sesión lo hace la persona en el navegador; la app no ve sus credenciales.
+    pub fn login_claude(&self) -> Result<(), AiSetupError> {
+        let bin = std::env::var("CLAUDE_CODE_BIN").unwrap_or_else(|_| "claude".to_owned());
+        let Some(cli) = find_on_path(&bin) else {
+            return Err(AiSetupError::Invalid(
+                "no se encontró el CLI `claude`: instálalo desde claude.com/claude-code".to_owned(),
+            ));
+        };
+        open_console(&cli, &["auth", "login"])
+    }
+
+    /// Ejecuta `python -m lsx_agent <args>` y devuelve su JSON de una línea.
+    fn run_agent(&self, args: &[&str], timeout: Duration) -> Result<Value, AiSetupError> {
+        if !self.agent_exists() {
+            return Err(AiSetupError::MissingExe(self.python.display().to_string()));
+        }
         let mut command = Command::new(&self.python);
         command
-            .args(["-P", "-s", "-m", "lsx_agent", "--probe"])
-            .arg(format!("{provider_id}/{model_id}"))
+            .args(["-P", "-s", "-m", "lsx_agent"])
+            .args(args)
             .arg("--data-dir")
             .arg(self.root.agent_data_dir())
             .arg("--secrets")
@@ -331,28 +634,11 @@ impl AiSetup {
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
             command.creation_flags(CREATE_NO_WINDOW);
         }
-        let output = run_with_timeout(command, PROBE_TIMEOUT)?;
-        let reply: Value =
-            serde_json::from_str(output.stdout.trim()).map_err(|_| AiSetupError::Command {
-                code: None,
-                message: summarize_failure("", &output.stdout),
-            })?;
-        if reply.get("ok").and_then(Value::as_bool) == Some(true) {
-            Ok(reply
-                .get("text")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned())
-        } else {
-            Err(AiSetupError::Command {
-                code: None,
-                message: reply
-                    .get("error")
-                    .and_then(Value::as_str)
-                    .unwrap_or("respuesta vacía")
-                    .to_owned(),
-            })
-        }
+        let output = run_with_timeout(command, timeout)?;
+        serde_json::from_str(output.stdout.trim()).map_err(|_| AiSetupError::Command {
+            code: None,
+            message: summarize_failure("", &output.stdout),
+        })
     }
 
     /// Abre la carpeta del agente (`agent/`).
@@ -371,6 +657,25 @@ impl AiSetup {
             return Err(AiSetupError::MissingPath(log.display().to_string()));
         }
         open_file(&log)
+    }
+
+    /// Modifica (o crea) la entrada de un proveedor y la guarda de forma atómica.
+    fn update_entry(
+        &self,
+        spec: &ProviderSpec,
+        change: impl FnOnce(&mut Map<String, Value>),
+    ) -> Result<(), AiSetupError> {
+        let mut secrets = self.load_secrets();
+        let entry = secrets
+            .entry(spec.id.to_owned())
+            .or_insert_with(|| Value::Object(Map::new()));
+        if !entry.is_object() {
+            *entry = Value::Object(Map::new());
+        }
+        if let Some(object) = entry.as_object_mut() {
+            change(object);
+        }
+        self.store_secrets(&secrets)
     }
 
     fn load_secrets(&self) -> Map<String, Value> {
@@ -401,13 +706,51 @@ impl AiSetup {
     }
 }
 
-fn credential_source(spec: &ProviderSpec, secrets: &Map<String, Value>) -> CredentialSource {
+fn known(provider_id: &str) -> Result<&'static ProviderSpec, AiSetupError> {
+    provider(provider_id)
+        .ok_or_else(|| AiSetupError::Invalid(format!("proveedor desconocido: {provider_id}")))
+}
+
+fn provider_status(spec: &'static ProviderSpec, secrets: &Map<String, Value>) -> ProviderStatus {
+    let entry = secrets.get(spec.id).and_then(Value::as_object);
+    let source = credential_source(spec, entry);
+    let has_credential = match spec.link {
+        LinkFlow::Cli => source != CredentialSource::None,
+        LinkFlow::Key if !spec.needs_key => entry.is_some() || source != CredentialSource::None,
+        LinkFlow::Key => source != CredentialSource::None,
+    };
+    let enabled = entry
+        .and_then(|entry| entry.get("enabled"))
+        .and_then(Value::as_bool)
+        != Some(false);
+    let models = active_models(spec, entry);
+    let base_url = spec.custom_base_url.map(|default| {
+        entry
+            .and_then(|entry| entry.get("baseUrl"))
+            .and_then(Value::as_str)
+            .map(|url| url.trim().trim_end_matches('/'))
+            .filter(|url| !url.is_empty())
+            .unwrap_or(default)
+            .to_owned()
+    });
+    ProviderStatus {
+        spec,
+        configured: has_credential && enabled && !models.is_empty(),
+        has_credential,
+        enabled,
+        added: entry.is_some() || has_credential,
+        source,
+        models,
+        base_url,
+    }
+}
+
+fn credential_source(spec: &ProviderSpec, entry: Option<&Map<String, Value>>) -> CredentialSource {
     let Some(env_key) = spec.env_key else {
         let bin = std::env::var("CLAUDE_CODE_BIN").unwrap_or_else(|_| "claude".to_owned());
         return find_on_path(&bin).map_or(CredentialSource::None, CredentialSource::Cli);
     };
-    if let Some(key) = secrets
-        .get(spec.id)
+    if let Some(key) = entry
         .and_then(|entry| entry.get("apiKey"))
         .and_then(Value::as_str)
         .map(str::trim)
@@ -429,20 +772,88 @@ fn credential_source(spec: &ProviderSpec, secrets: &Map<String, Value>) -> Crede
     CredentialSource::None
 }
 
-fn extra_models(secrets: &Map<String, Value>, provider_id: &str) -> Vec<String> {
-    secrets
-        .get(provider_id)
+/// Modelos activos, con la misma regla que `Secrets.active_models` de `providers.py`.
+fn active_models(spec: &ProviderSpec, entry: Option<&Map<String, Value>>) -> Vec<ModelChoice> {
+    let suggested = || {
+        spec.models
+            .iter()
+            .map(|(id, name)| ModelChoice::new(*id, *name))
+            .collect::<Vec<_>>()
+    };
+    let Some(raw) = entry
         .and_then(|entry| entry.get("models"))
         .and_then(Value::as_array)
-        .map(|models| {
-            models
-                .iter()
-                .filter_map(Value::as_str)
-                .filter(|model| !model.is_empty())
-                .map(str::to_owned)
-                .collect()
+    else {
+        return suggested();
+    };
+    let legacy = raw.iter().all(Value::is_string);
+    let mut out = if legacy { suggested() } else { Vec::new() };
+    out.extend(parse_models(raw));
+    normalize_models(&out)
+}
+
+/// `[{"id", "name"}]` o `["id"]` → modelos (sin validar duplicados).
+fn parse_models(items: &[Value]) -> Vec<ModelChoice> {
+    items
+        .iter()
+        .filter_map(|item| match item {
+            Value::String(id) => Some(ModelChoice::new(id.trim(), id.trim())),
+            Value::Object(object) => {
+                let id = object.get("id").and_then(Value::as_str)?.trim();
+                let name = object
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .unwrap_or_default();
+                Some(ModelChoice::new(id, name))
+            }
+            _ => None,
         })
-        .unwrap_or_default()
+        .collect()
+}
+
+/// Quita vacíos y duplicados conservando el orden.
+fn normalize_models(models: &[ModelChoice]) -> Vec<ModelChoice> {
+    let mut seen = std::collections::HashSet::new();
+    models
+        .iter()
+        .filter_map(|model| {
+            let id = model.id.trim();
+            (!id.is_empty() && seen.insert(id.to_owned()))
+                .then(|| ModelChoice::new(id, model.name.trim()))
+        })
+        .collect()
+}
+
+/// Abre una consola visible que ejecuta `program args…` (inicio de sesión interactivo).
+fn open_console(program: &Path, args: &[&str]) -> Result<(), AiSetupError> {
+    let io = |error: std::io::Error| AiSetupError::Io {
+        path: program.display().to_string(),
+        error: error.to_string(),
+    };
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+        // `cmd /k` deja la ventana abierta para leer el resultado; los `.cmd` de npm
+        // necesitan pasar por `cmd` de todos modos.
+        Command::new("cmd")
+            .arg("/k")
+            .arg(program)
+            .args(args)
+            .creation_flags(CREATE_NEW_CONSOLE)
+            .spawn()
+            .map(|_| ())
+            .map_err(io)
+    }
+    #[cfg(not(windows))]
+    {
+        Command::new(program)
+            .args(args)
+            .spawn()
+            .map(|_| ())
+            .map_err(io)
+    }
 }
 
 /// Equivalente a `shutil.which`: busca un ejecutable en el `PATH`.
@@ -509,7 +920,7 @@ fn run_with_timeout(
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(AiSetupError::Spawn(format!(
-                    "no se pudo esperar a opencode: {error}"
+                    "no se pudo esperar al asistente: {error}"
                 )));
             }
         }
@@ -673,25 +1084,68 @@ mod tests {
         (PortableRoot::from_dir(dir.clone()), dir)
     }
 
+    fn status_of(setup: &AiSetup, id: &str) -> ProviderStatus {
+        setup
+            .status()
+            .into_iter()
+            .find(|s| s.spec.id == id)
+            .expect("proveedor")
+    }
+
     #[test]
     fn la_tabla_de_proveedores_coincide_con_la_del_agente() {
         let python =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../python/lsx_agent/providers.py");
         let source = std::fs::read_to_string(python).expect("providers.py");
+        let mut last = 0;
         for spec in &PROVIDERS {
+            let marker = format!("id=\"{}\"", spec.id);
+            let at = source
+                .find(&marker)
+                .unwrap_or_else(|| panic!("{} falta en providers.py", spec.id));
+            assert!(at > last, "{} está en otro orden en providers.py", spec.id);
+            last = at;
+            let block = &source[at..];
+            let block = &block[..block.find("ProviderSpec(").unwrap_or(block.len())];
             assert!(
-                source.contains(&format!("id=\"{}\"", spec.id)),
-                "{} falta en providers.py",
+                block.contains(&format!("kind=\"{}\"", spec.kind.as_str())),
+                "{}: familia distinta en providers.py",
                 spec.id
             );
             for (model, _) in spec.models {
                 assert!(
-                    source.contains(&format!("(\"{model}\"")),
+                    block.contains(&format!("(\"{model}\"")),
                     "{}/{model} falta en providers.py",
                     spec.id
                 );
             }
+            if let Some(env) = spec.env_key {
+                assert!(block.contains(&format!("env_key=\"{env}\"")), "{env}");
+            }
+            assert_eq!(
+                block.contains("needs_key=False"),
+                !spec.needs_key,
+                "{}: needs_key",
+                spec.id
+            );
+            assert_eq!(
+                block.contains("custom_base_url=True"),
+                spec.custom_base_url.is_some(),
+                "{}: custom_base_url",
+                spec.id
+            );
         }
+    }
+
+    #[test]
+    fn cada_familia_tiene_sus_proveedores() {
+        let api: Vec<_> = providers_of(ProviderKind::Api).map(|s| s.id).collect();
+        let subs: Vec<_> = providers_of(ProviderKind::Subscription)
+            .map(|s| s.id)
+            .collect();
+        assert!(api.contains(&"openrouter") && api.contains(&"anthropic"));
+        assert_eq!(subs, ["opencode", "claude-code"]);
+        assert_eq!(api.len() + subs.len(), PROVIDERS.len());
     }
 
     #[test]
@@ -708,17 +1162,19 @@ mod tests {
         setup
             .save_key("openrouter", "sk-or-abcdef1234")
             .expect("guardar");
-        let status = setup
-            .status()
-            .into_iter()
-            .find(|s| s.spec.id == "openrouter")
-            .unwrap();
+        let status = status_of(&setup, "openrouter");
         assert!(status.configured);
         assert_eq!(
             status.source,
             CredentialSource::Saved {
                 last4: "1234".to_owned()
             }
+        );
+        // Formato antiguo: los «modelos extra» se suman a los sugeridos.
+        assert!(
+            setup
+                .models()
+                .contains(&"openrouter/openrouter/auto".to_owned())
         );
         assert!(setup.models().contains(&"openrouter/x/y".to_owned()));
 
@@ -728,6 +1184,94 @@ mod tests {
         assert_eq!(saved["otro"], 1);
         assert_eq!(saved["openrouter"]["models"][0], "x/y");
         assert!(saved["openrouter"].get("apiKey").is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn varios_proveedores_activos_y_el_interruptor_no_borra_la_clave() {
+        let (root, dir) = temp_root("enabled");
+        let setup = AiSetup::from_root(root);
+        setup.save_key("anthropic", "sk-ant-12345678").unwrap();
+        setup.save_key("opencode", "oc-12345678").unwrap();
+        let models = setup.models();
+        assert!(models.contains(&"anthropic/claude-opus-5-5".to_owned()));
+        assert!(models.contains(&"opencode/glm-5.3-flash".to_owned()));
+
+        setup.set_enabled("anthropic", false).unwrap();
+        let status = status_of(&setup, "anthropic");
+        assert!(!status.configured && !status.enabled && status.has_credential);
+        assert!(setup.models().iter().all(|m| !m.starts_with("anthropic/")));
+
+        setup.set_enabled("anthropic", true).unwrap();
+        assert!(status_of(&setup, "anthropic").configured);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn los_modelos_activos_sustituyen_a_los_sugeridos() {
+        let (root, dir) = temp_root("models");
+        let setup = AiSetup::from_root(root);
+        setup.save_key("openrouter", "sk-or-12345678").unwrap();
+        let saved = setup
+            .set_models(
+                "openrouter",
+                &[
+                    ModelChoice::new("anthropic/claude-opus-5-5", "Opus"),
+                    ModelChoice::new("anthropic/claude-opus-5-5", "duplicado"),
+                    ModelChoice::new("  ", ""),
+                    ModelChoice::new("openai/gpt-5.5", ""),
+                ],
+            )
+            .unwrap();
+        assert_eq!(
+            saved,
+            [
+                ModelChoice::new("anthropic/claude-opus-5-5", "Opus"),
+                ModelChoice::new("openai/gpt-5.5", "openai/gpt-5.5"),
+            ]
+        );
+        // Filtra por proveedor: el CLI `claude` puede estar instalado en la máquina.
+        let openrouter: Vec<_> = setup
+            .models()
+            .into_iter()
+            .filter(|m| m.starts_with("openrouter/"))
+            .collect();
+        assert_eq!(
+            openrouter,
+            [
+                "openrouter/anthropic/claude-opus-5-5",
+                "openrouter/openai/gpt-5.5"
+            ]
+        );
+        assert!(matches!(
+            setup.set_models("openrouter", &[]),
+            Err(AiSetupError::Invalid(_))
+        ));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn un_servidor_local_se_anade_sin_clave_y_valida_su_url() {
+        let (root, dir) = temp_root("local");
+        let setup = AiSetup::from_root(root);
+        let before = status_of(&setup, "lmstudio");
+        assert!(!before.added && !before.configured);
+        assert_eq!(before.base_url.as_deref(), Some("http://localhost:1234/v1"));
+
+        setup.add_provider("lmstudio").unwrap();
+        assert!(status_of(&setup, "lmstudio").configured);
+        setup
+            .set_base_url("lmstudio", "http://127.0.0.1:9999/v1/")
+            .unwrap();
+        assert_eq!(
+            status_of(&setup, "lmstudio").base_url.as_deref(),
+            Some("http://127.0.0.1:9999/v1")
+        );
+        assert!(setup.set_base_url("lmstudio", "ftp://x").is_err());
+        assert!(setup.set_base_url("openai", "http://evil.test").is_err());
+
+        setup.remove_provider("lmstudio").unwrap();
+        assert!(!status_of(&setup, "lmstudio").added);
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -769,6 +1313,10 @@ mod tests {
             setup.probe("desconocido/modelo"),
             Err(AiSetupError::Invalid(_))
         ));
+        assert!(matches!(
+            setup.list_models("desconocido"),
+            Err(AiSetupError::Invalid(_))
+        ));
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -780,6 +1328,8 @@ mod tests {
             ..AiSetup::from_root(root)
         };
         let error = setup.probe("opencode/glm-5.3-flash").unwrap_err();
+        assert!(matches!(error, AiSetupError::MissingExe(_)), "{error}");
+        let error = setup.list_models("openrouter").unwrap_err();
         assert!(matches!(error, AiSetupError::MissingExe(_)), "{error}");
         let _ = std::fs::remove_dir_all(dir);
     }

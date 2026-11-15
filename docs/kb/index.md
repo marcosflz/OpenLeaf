@@ -40,7 +40,7 @@
 | `kb/architecture/crates` | [Crates y ley de dependencias](architecture/01-crates.md) | stable | 2026-10-24 |
 | `kb/architecture/flujos` | [Flujos de extremo a extremo](architecture/02-flujos.md) | stable | 2026-10-24 |
 | `kb/architecture/configuracion` | [Configuración y estado de usuario](architecture/03-configuracion.md) | stable | 2026-10-24 |
-| `kb/architecture/chat-agente` | [Chat y agente LaTeX](architecture/04-chat-agente.md) | stable | 2026-11-13 |
+| `kb/architecture/chat-agente` | [Chat y agente LaTeX](architecture/04-chat-agente.md) | stable | 2026-11-15 |
 | `kb/architecture/instalador` | [Instalador y distribución](architecture/05-instalador.md) | draft | 2026-10-24 |
 | `kb/architecture/ui-shell` | [Shell, paneles y temas](architecture/06-ui-shell.md) | stable | 2026-10-24 |
 

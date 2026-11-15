@@ -28,6 +28,7 @@ pub mod panels;
 pub mod permission;
 pub mod project;
 pub mod quick_open;
+pub mod settings_providers;
 pub mod settings_ui;
 pub mod status;
 pub mod status_bar;

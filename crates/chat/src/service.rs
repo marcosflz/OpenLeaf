@@ -718,23 +718,23 @@ impl Worker {
         }
     }
 
-    /// Modelo inicial: `ai.model` si su proveedor está configurado; si no, el
-    /// primero del catálogo. Sin proveedores configurados → `None` (la UI pide
-    /// configurar uno; nunca se fuerza un proveedor).
+    /// Modelo vigente: el actual si sigue entre los activos del catálogo; si no,
+    /// `ai.model`; si tampoco, el primero del catálogo. Sin proveedores
+    /// configurados → `None` (la UI pide configurar uno; nunca se fuerza un
+    /// proveedor). Se llama al arrancar y cada vez que Ajustes cambia los
+    /// proveedores o sus modelos activos.
     fn resolve_initial_model(&mut self) {
         let Some(catalog) = &self.catalog else {
             return;
         };
-        let configured = |provider: &str| catalog.providers.iter().any(|p| p.id == provider);
         if let Some(current) = &self.model
-            && configured(&current.provider_id)
+            && catalog.offers(&current.provider_id, &current.model_id)
         {
             return;
         }
         if let Some(model) = &self.config.model
             && let Some((provider, model_id)) = model.split_once('/')
-            && !model_id.is_empty()
-            && configured(provider)
+            && catalog.offers(provider, model_id)
         {
             self.model = Some(ModelRef::new(provider, model_id));
             return;

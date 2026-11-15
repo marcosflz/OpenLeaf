@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from conftest import Harness, call, say
 
-from lsx_agent.providers import Secrets, catalog
+from lsx_agent.providers import PROVIDERS, Secrets, catalog
 
 
 async def test_hello_and_agents(harness: Harness) -> None:
@@ -18,8 +18,9 @@ async def test_hello_and_agents(harness: Harness) -> None:
 
 
 def test_catalog_lists_only_configured_providers(tmp_path: Path, monkeypatch) -> None:
-    for var in ("OPENCODE_API_KEY", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY"):
-        monkeypatch.delenv(var, raising=False)
+    for spec in PROVIDERS:
+        if spec.env_key:
+            monkeypatch.delenv(spec.env_key, raising=False)
     monkeypatch.setenv("CLAUDE_CODE_BIN", "claude-que-no-existe")
     assert catalog(Secrets(tmp_path / "nada.json"))["providers"] == []
     secrets = tmp_path / "ai.json"

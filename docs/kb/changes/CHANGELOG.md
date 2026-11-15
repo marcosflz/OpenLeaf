@@ -2,7 +2,7 @@
 id: kb/changes/changelog
 title: Changelog incremental de OpenLeaf
 status: stable
-updated: 2026-11-13
+updated: 2026-11-15
 source:
   - docs/kb/changes/PLAN-0.2.md
   - git log
@@ -16,6 +16,51 @@ verified: true
 > Registro incremental de cambios con **porqué**, **territorio** y **evidencia**.
 > Formato: `CHG-NNNN`. Estado: `planned` · `doing` · `done` · `reverted`.
 > El estado vivo de las tareas está en `PLAN-0.2.md`; aquí queda la historia.
+
+## CHG-0018 — Gestión de proveedores y modelos como en nexus: Claves de API y Suscripciones
+
+- **Fecha:** 2026-11-15
+- **Tarea:** P3-AI-2
+- **Estado:** done
+- **Territorio:**
+  - `python/lsx_agent/{providers,__main__}.py` y `python/tests/test_providers.py`;
+  - `crates/ui/src/{ai_setup,settings_providers,settings_ui,app,lib}.rs` y
+    `crates/ui/src/panels/chat.rs`;
+  - `crates/chat/src/{service,protocol}.rs`;
+  - `crates/ui/locales/es.yml`.
+- **Qué cambia:**
+  - Proveedores en dos familias, cada una con su sección de Ajustes: **Claves de API**
+    (OpenRouter, OpenAI, Anthropic, Gemini, DeepSeek, LM Studio) y **Suscripciones**
+    (OpenCode Go, Claude vía CLI). La sección IA queda para el modelo predeterminado y el
+    comportamiento del asistente.
+  - Varios proveedores activos a la vez. Por proveedor: interruptor, clave (o CLI), URL base
+    (solo LM Studio) y **modelos activos**. Solo los activos llegan al selector del chat.
+  - «Elegir modelos» consulta el catálogo real del proveedor (`lsx_agent --list-models`),
+    con búsqueda, activar todos/ninguno y alta manual por nombre.
+  - La ★ de un chip fija `ai.model` (predeterminado). Al guardar Ajustes, el chat cambia a
+    ese modelo; al cambiar proveedores o modelos, relee su catálogo sin reiniciar el agente
+    y, si su modelo dejó de estar activo, elige otro.
+  - OpenAI, Gemini, DeepSeek y LM Studio usan el backend `openai-compatible` de nas-adk con
+    URL fija (solo LM Studio la deja cambiar).
+  - Claude: botón que abre una consola con `claude auth login`.
+  - Hook de QA `LSX_QA_OPEN_SETTINGS` admite `api` y `subscriptions`.
+- **Compatibilidad:** `config/secrets/ai.json` sigue siendo la fuente. Sin `models`, se usan
+  los sugeridos; una lista de cadenas (formato anterior) se suma a los sugeridos. Ids de
+  proveedor sin cambios (`opencode/…` sigue valiendo).
+- **Fuera de alcance:** ChatGPT («Sign in with ChatGPT») de nexus, porque nas-adk 0.3.0 no
+  tiene ese backend.
+- **Por qué:** petición del usuario: replicar la gestión de modelos de nexus y separar API y
+  suscripciones.
+- **Evidencia:**
+  - Gates: `fmt`, `clippy -D warnings`, `cargo test --workspace`, `kb check`; agente:
+    `pytest` (38) y `ruff`.
+  - Tests nuevos: paridad de tabla Rust↔Python (familia, clave, URL), varios activos e
+    interruptor, modelos activos y formato antiguo, servidor local, `offers` del catálogo,
+    filtro/orden del selector, listado de modelos con clave (red simulada).
+  - Capturas locales `shots/providers-{api,subscriptions,ai}.png` con una raíz de QA aislada
+    (claves falsas).
+  - Pendiente de revisión manual: el selector de modelos contra un proveedor real y el
+    inicio de sesión de Claude (la inyección de clics no está disponible en esta sesión).
 
 ## CHG-0017 — Pendientes de la interfaz 0.3: editor, visor, árbol y menús contextuales
 

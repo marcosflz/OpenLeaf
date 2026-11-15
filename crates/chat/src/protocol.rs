@@ -159,6 +159,15 @@ pub struct ProviderInfo {
 }
 
 impl ProviderCatalog {
+    /// `true` si el catálogo ofrece ese modelo (proveedor configurado y modelo activo).
+    pub fn offers(&self, provider_id: &str, model_id: &str) -> bool {
+        !model_id.is_empty()
+            && self
+                .providers
+                .iter()
+                .any(|p| p.id == provider_id && p.models.contains_key(model_id))
+    }
+
     /// Modelos de un provider (ids).
     pub fn model_ids(&self, provider_id: &str) -> Vec<String> {
         self.providers
@@ -330,5 +339,37 @@ impl PermissionReply {
             Self::Always => "always",
             Self::Reject => "reject",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn catalog(value: Value) -> ProviderCatalog {
+        serde_json::from_value(value).expect("catálogo")
+    }
+
+    #[test]
+    fn el_catalogo_solo_ofrece_los_modelos_activos_de_proveedores_activos() {
+        let catalog = catalog(serde_json::json!({
+            "providers": [
+                {"id": "openrouter", "name": "OpenRouter", "kind": "api",
+                 "models": {"anthropic/claude-opus-5-5": {"name": "Opus"}}},
+                {"id": "opencode", "name": "OpenCode Go", "kind": "subscription",
+                 "models": {"glm-5.3-flash": {"name": "GLM"}}}
+            ],
+            "default": {}
+        }));
+        assert!(catalog.offers("openrouter", "anthropic/claude-opus-5-5"));
+        assert!(catalog.offers("opencode", "glm-5.3-flash"));
+        // Proveedor activo, modelo desactivado; proveedor ausente; modelo vacío.
+        assert!(!catalog.offers("openrouter", "openai/gpt-5.5"));
+        assert!(!catalog.offers("anthropic", "claude-opus-5-5"));
+        assert!(!catalog.offers("opencode", ""));
+        assert_eq!(
+            catalog.pick_default_model(),
+            Some(ModelRef::new("openrouter", "anthropic/claude-opus-5-5"))
+        );
     }
 }

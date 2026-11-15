@@ -14,6 +14,10 @@
 //!   nuevo y persiste de forma atómica.
 //! - La conexión de IA vive en [`crate::ai_setup`]: proveedores, claves en
 //!   `config/secrets/ai.json` y prueba de modelo (en `background_spawn`).
+//!   Como en nexus, los proveedores se gestionan en dos secciones propias,
+//!   **Claves de API** y **Suscripciones** ([`crate::settings_providers`]); la
+//!   sección IA conserva el modelo predeterminado y el comportamiento del
+//!   asistente.
 //!
 //! La firma pública [`open_dialog`] se conserva para el shell.
 
@@ -31,7 +35,6 @@ use gpui_kit::component::{
     switch::Switch,
     v_flex,
 };
-use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, SharedString, Styled as _, Subscription, WeakEntity, Window, div,
@@ -40,8 +43,9 @@ use gpui_kit::{
 use lsx_core::config::{Settings, UiSettings, parse_accent};
 use lsx_core::root::PortableRoot;
 
-use crate::ai_setup::{self, AiSetup, AiSetupError, CredentialSource, ProviderStatus};
+use crate::ai_setup::{self, AiSetup, AiSetupError, ProviderKind, ProviderStatus};
 use crate::app::AppRoot;
+use crate::settings_providers::{ProviderList, ProvidersEvent};
 use crate::theme;
 
 /// Rango de debounce aceptado (ms), alineado con `Settings::validate`.
@@ -85,16 +89,20 @@ enum Section {
     Compilation,
     Pdf,
     Ai,
+    ApiKeys,
+    Subscriptions,
     Advanced,
 }
 
 impl Section {
-    const ALL: [Section; 6] = [
+    const ALL: [Section; 8] = [
         Section::Appearance,
         Section::Editor,
         Section::Compilation,
         Section::Pdf,
         Section::Ai,
+        Section::ApiKeys,
+        Section::Subscriptions,
         Section::Advanced,
     ];
 
@@ -105,6 +113,10 @@ impl Section {
             Self::Compilation => rust_i18n::t!("ui.app.settings.sections.compilation").to_string(),
             Self::Pdf => rust_i18n::t!("ui.app.settings.sections.pdf").to_string(),
             Self::Ai => rust_i18n::t!("ui.app.settings.sections.ai").to_string(),
+            Self::ApiKeys => rust_i18n::t!("ui.app.settings.sections.api_keys").to_string(),
+            Self::Subscriptions => {
+                rust_i18n::t!("ui.app.settings.sections.subscriptions").to_string()
+            }
             Self::Advanced => rust_i18n::t!("ui.app.settings.sections.advanced").to_string(),
         }
     }
@@ -116,6 +128,8 @@ impl Section {
             Self::Compilation => IconName::Play,
             Self::Pdf => IconName::BookOpen,
             Self::Ai => IconName::Bot,
+            Self::ApiKeys => IconName::Globe,
+            Self::Subscriptions => IconName::CircleUser,
             Self::Advanced => IconName::Settings,
         }
     }
@@ -430,9 +444,11 @@ struct SettingsForm {
     pdf_zoom: Entity<InputState>,
     pdf_cache: Entity<InputState>,
     ai_model: Entity<InputState>,
-    /// Campo de clave por proveedor con API (`opencode`, `openrouter`, `anthropic`).
-    key_inputs: Vec<(&'static str, Entity<InputState>)>,
     model_select: Entity<SelectState<SearchableVec<SharedString>>>,
+    /// Tarjetas de «Claves de API».
+    api_list: Entity<ProviderList>,
+    /// Tarjetas de «Suscripciones».
+    subscription_list: Entity<ProviderList>,
 
     ai: AiUiState,
     _subscriptions: Vec<Subscription>,
@@ -512,18 +528,6 @@ impl SettingsForm {
                 .default_value(settings.ai.model.clone().unwrap_or_default())
                 .placeholder("proveedor/modelo")
         });
-        let key_inputs = ai_setup::PROVIDERS
-            .iter()
-            .filter(|spec| spec.env_key.is_some())
-            .map(|spec| {
-                let input = cx.new(|cx| {
-                    InputState::new(window, cx).placeholder(
-                        rust_i18n::t!("ui.app.settings.ai_key_placeholder").to_string(),
-                    )
-                });
-                (spec.id, input)
-            })
-            .collect();
         let model_select = cx.new(|cx| {
             SelectState::new(
                 SearchableVec::new(Vec::<SharedString>::new()),
@@ -539,6 +543,25 @@ impl SettingsForm {
             Err(error) => (None, Some(error.to_string())),
         };
         let setup = root_dir.clone().map(AiSetup::from_root);
+        let default_model = settings.ai.model.clone();
+        let api_list = cx.new(|cx| {
+            ProviderList::new(
+                ProviderKind::Api,
+                setup.clone(),
+                default_model.clone(),
+                window,
+                cx,
+            )
+        });
+        let subscription_list = cx.new(|cx| {
+            ProviderList::new(
+                ProviderKind::Subscription,
+                setup.clone(),
+                default_model,
+                window,
+                cx,
+            )
+        });
         let ai = AiUiState {
             statuses: setup.as_ref().map(AiSetup::status).unwrap_or_default(),
             models: setup.as_ref().map(AiSetup::models).unwrap_or_default(),
@@ -575,12 +598,14 @@ impl SettingsForm {
             pdf_zoom,
             pdf_cache,
             ai_model,
-            key_inputs,
             model_select,
+            api_list,
+            subscription_list,
             ai,
             _subscriptions: Vec::new(),
         };
         form.subscribe_controls(cx);
+        form.subscribe_providers(window, cx);
         if !form.ai.models.is_empty() {
             form.sync_model_select(window, cx);
         }
@@ -638,10 +663,49 @@ impl SettingsForm {
                 if let SelectEvent::Confirm(Some(value)) = event {
                     this.settings.ai.model = Some(value.to_string());
                     this.dirty = true;
+                    this.sync_default_to_lists(cx);
                     cx.notify();
                 }
             },
         ));
+    }
+
+    /// Escucha las tarjetas de proveedores: un cambio guardado relee el
+    /// catálogo (aquí, en la otra sección y en el chat); una ★ fija el
+    /// predeterminado del borrador.
+    fn subscribe_providers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        for list in [self.api_list.clone(), self.subscription_list.clone()] {
+            self._subscriptions.push(cx.subscribe_in(
+                &list,
+                window,
+                |this, _list, event: &ProvidersEvent, window, cx| match event {
+                    ProvidersEvent::Changed => {
+                        this.api_list.update(cx, |list, cx| list.reload(cx));
+                        this.subscription_list
+                            .update(cx, |list, cx| list.reload(cx));
+                        this.reload_ai(window, cx);
+                        let _ = this
+                            .root
+                            .update(cx, |root, cx| root.refresh_ai_providers(cx));
+                    }
+                    ProvidersEvent::SetDefault(model) => {
+                        this.settings.ai.model = Some(model.clone());
+                        this.dirty = true;
+                        this.sync_default_to_lists(cx);
+                        this.sync_model_select(window, cx);
+                        cx.notify();
+                    }
+                },
+            ));
+        }
+    }
+
+    /// Lleva el predeterminado del borrador a las dos listas (★ de los chips).
+    fn sync_default_to_lists(&mut self, cx: &mut Context<Self>) {
+        let model = self.settings.ai.model.clone();
+        for list in [self.api_list.clone(), self.subscription_list.clone()] {
+            list.update(cx, |list, cx| list.set_default_model(model.clone(), cx));
+        }
     }
 
     fn focus_initial(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -852,83 +916,6 @@ impl SettingsForm {
         }
         self.sync_model_select(window, cx);
         cx.notify();
-    }
-
-    fn provider_name(provider_id: &str) -> String {
-        ai_setup::provider(provider_id)
-            .map(|spec| spec.name.to_owned())
-            .unwrap_or_else(|| provider_id.to_owned())
-    }
-
-    fn save_key(&mut self, provider_id: &'static str, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(setup) = self.ai.setup.clone() else {
-            return;
-        };
-        let Some(input) = self
-            .key_inputs
-            .iter()
-            .find(|(id, _)| *id == provider_id)
-            .map(|(_, input)| input.clone())
-        else {
-            return;
-        };
-        let key = input.read(cx).value().to_string();
-        match setup.save_key(provider_id, &key) {
-            Ok(()) => {
-                input.update(cx, |state, cx| state.set_value("", window, cx));
-                self.ai.error = None;
-                self.ai.info = Some(
-                    rust_i18n::t!(
-                        "ui.app.settings.ai_key_saved_info",
-                        provider = Self::provider_name(provider_id)
-                    )
-                    .to_string(),
-                );
-                // Primer proveedor configurado: se propone su primer modelo.
-                if self.settings.ai.model.is_none()
-                    && let Some(spec) = ai_setup::provider(provider_id)
-                    && let Some((model, _)) = spec.models.first()
-                {
-                    self.settings.ai.model = Some(format!("{provider_id}/{model}"));
-                    self.dirty = true;
-                }
-            }
-            Err(error) => {
-                self.ai.info = None;
-                self.ai.error =
-                    Some(rust_i18n::t!("ui.app.settings.ai_key_error", error = error).to_string());
-            }
-        }
-        self.reload_ai(window, cx);
-    }
-
-    fn remove_key(
-        &mut self,
-        provider_id: &'static str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(setup) = self.ai.setup.clone() else {
-            return;
-        };
-        match setup.remove_key(provider_id) {
-            Ok(()) => {
-                self.ai.error = None;
-                self.ai.info = Some(
-                    rust_i18n::t!(
-                        "ui.app.settings.ai_key_removed_info",
-                        provider = Self::provider_name(provider_id)
-                    )
-                    .to_string(),
-                );
-            }
-            Err(error) => {
-                self.ai.info = None;
-                self.ai.error =
-                    Some(rust_i18n::t!("ui.app.settings.ai_key_error", error = error).to_string());
-            }
-        }
-        self.reload_ai(window, cx);
     }
 
     /// Lanza una petición mínima con el modelo elegido (en segundo plano).
@@ -1208,6 +1195,22 @@ impl SettingsForm {
             Section::Compilation => self.render_compilation(cx).into_any_element(),
             Section::Pdf => self.render_pdf(cx).into_any_element(),
             Section::Ai => self.render_ai(cx).into_any_element(),
+            Section::ApiKeys => self
+                .render_providers(
+                    "ui.app.settings.sections.api_keys",
+                    "ui.app.settings.api_keys_hint",
+                    self.api_list.clone(),
+                    cx,
+                )
+                .into_any_element(),
+            Section::Subscriptions => self
+                .render_providers(
+                    "ui.app.settings.sections.subscriptions",
+                    "ui.app.settings.subscriptions_hint",
+                    self.subscription_list.clone(),
+                    cx,
+                )
+                .into_any_element(),
             Section::Advanced => self.render_advanced(cx).into_any_element(),
         }
     }
@@ -1546,11 +1549,47 @@ impl SettingsForm {
             div().into_any_element()
         };
 
-        let providers = v_flex().gap_2().w_full().children(
+        // Resumen y accesos a las dos secciones de proveedores.
+        let active = |kind: ProviderKind| {
             self.ai
                 .statuses
                 .iter()
-                .map(|status| self.render_provider(status, cx)),
+                .filter(|status| status.spec.kind == kind && status.configured)
+                .count()
+        };
+        let providers = setting_row(
+            rust_i18n::t!("ui.app.settings.ai_providers").to_string(),
+            Some(
+                rust_i18n::t!(
+                    "ui.app.settings.ai_providers_summary",
+                    api = active(ProviderKind::Api),
+                    subscriptions = active(ProviderKind::Subscription)
+                )
+                .to_string(),
+            ),
+            h_flex()
+                .gap_2()
+                .child(
+                    Button::new("settings-ai-goto-api")
+                        .small()
+                        .outline()
+                        .icon(IconName::Globe)
+                        .label(rust_i18n::t!("ui.app.settings.sections.api_keys").to_string())
+                        .on_click(
+                            cx.listener(|this, _, _, cx| this.set_section(Section::ApiKeys, cx)),
+                        ),
+                )
+                .child(
+                    Button::new("settings-ai-goto-subscriptions")
+                        .small()
+                        .outline()
+                        .icon(IconName::CircleUser)
+                        .label(rust_i18n::t!("ui.app.settings.sections.subscriptions").to_string())
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.set_section(Section::Subscriptions, cx)
+                        })),
+                ),
+            cx,
         );
 
         let model_control = if self.ai.models.is_empty() {
@@ -1631,22 +1670,14 @@ impl SettingsForm {
                 status,
                 cx,
             ))
-            .child(
-                div()
-                    .pt_2()
-                    .pb_1()
-                    .text_sm()
-                    .font_weight(gpui_kit::FontWeight::MEDIUM)
-                    .child(rust_i18n::t!("ui.app.settings.ai_providers").to_string()),
-            )
             .child(providers)
-            .child(div().pt_1().child(feedback))
             .child(setting_row(
                 rust_i18n::t!("ui.app.settings.ai_model").to_string(),
                 Some(rust_i18n::t!("ui.app.settings.ai_model_hint").to_string()),
                 model_control,
                 cx,
             ))
+            .child(div().pt_1().child(feedback))
             .child(setting_row(
                 rust_i18n::t!("ui.app.settings.ai_agent").to_string(),
                 Some(rust_i18n::t!("ui.app.settings.ai_agent_hint").to_string()),
@@ -1743,123 +1774,29 @@ impl SettingsForm {
             )
     }
 
-    /// Fila de un proveedor: nombre, estado, ayuda y (si usa clave) el campo
-    /// para pegarla con sus acciones.
-    fn render_provider(&self, status: &ProviderStatus, cx: &mut Context<Self>) -> AnyElement {
-        let spec = status.spec;
-        let provider_id = spec.id;
-        let (icon, color, state_label) = if status.configured {
-            (
-                IconName::CircleCheck,
-                cx.theme().success,
-                rust_i18n::t!("ui.app.settings.ai_provider_ready").to_string(),
-            )
-        } else {
-            (
-                IconName::CircleX,
-                cx.theme().muted_foreground,
-                rust_i18n::t!("ui.app.settings.ai_provider_missing").to_string(),
-            )
-        };
-        let source = match &status.source {
-            CredentialSource::None if spec.env_key.is_none() => {
-                Some(rust_i18n::t!("ui.app.settings.ai_cli_missing").to_string())
-            }
-            CredentialSource::None => None,
-            CredentialSource::Saved { last4 } => Some(
-                rust_i18n::t!("ui.app.settings.ai_key_saved", last4 = last4.as_str()).to_string(),
-            ),
-            CredentialSource::Env(var) => {
-                Some(rust_i18n::t!("ui.app.settings.ai_key_env", var = *var).to_string())
-            }
-            CredentialSource::Cli(path) => Some(
-                rust_i18n::t!(
-                    "ui.app.settings.ai_cli_found",
-                    path = path.display().to_string()
-                )
-                .to_string(),
-            ),
-        };
-        let key_input = self
-            .key_inputs
-            .iter()
-            .find(|(id, _)| *id == provider_id)
-            .map(|(_, input)| input.clone());
-        let saved = matches!(status.source, CredentialSource::Saved { .. });
-
+    /// «Claves de API» o «Suscripciones»: cabecera + tarjetas de la familia.
+    fn render_providers(
+        &self,
+        title: &str,
+        hint: &str,
+        list: Entity<ProviderList>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         v_flex()
-            .id(SharedString::from(format!(
-                "settings-ai-provider-{provider_id}"
-            )))
-            .w_full()
             .gap_1()
-            .px_3()
-            .py_2()
-            .rounded(cx.theme().radius)
-            .border_1()
-            .border_color(cx.theme().border)
-            .child(
-                h_flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .child(
-                        h_flex()
-                            .items_center()
-                            .gap_2()
-                            .child(Icon::new(icon).xsmall().text_color(color))
-                            .child(div().text_sm().child(spec.name)),
-                    )
-                    .child(div().text_xs().text_color(color).child(state_label)),
-            )
+            .child(section_header(
+                rust_i18n::t!(title).to_string(),
+                rust_i18n::t!(hint).to_string(),
+                cx,
+            ))
+            .child(div().pt_2().child(list))
             .child(
                 div()
+                    .pt_3()
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
-                    .child(spec.help),
+                    .child(rust_i18n::t!("ui.app.settings.providers.storage_note").to_string()),
             )
-            .children(source.map(|text| {
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(text)
-            }))
-            .children(key_input.map(|input| {
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .pt_1()
-                    .child(div().flex_1().child(Input::new(&input).small()))
-                    .child(
-                        Button::new(SharedString::from(format!(
-                            "settings-ai-save-{provider_id}"
-                        )))
-                        .small()
-                        .primary()
-                        .label(rust_i18n::t!("ui.app.settings.ai_key_save").to_string())
-                        .on_click(cx.listener(
-                            move |this, _, window, cx| {
-                                this.save_key(provider_id, window, cx);
-                            },
-                        )),
-                    )
-                    .when(saved, |row| {
-                        row.child(
-                            Button::new(SharedString::from(format!(
-                                "settings-ai-remove-{provider_id}"
-                            )))
-                            .small()
-                            .ghost()
-                            .label(rust_i18n::t!("ui.app.settings.ai_key_remove").to_string())
-                            .on_click(cx.listener(
-                                move |this, _, window, cx| {
-                                    this.remove_key(provider_id, window, cx);
-                                },
-                            )),
-                        )
-                    })
-            }))
-            .into_any_element()
     }
 
     fn render_advanced(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2102,6 +2039,24 @@ pub fn open_compilation_dialog(
     root: WeakEntity<AppRoot>,
 ) {
     open_dialog_at(window, cx, settings, root, Section::Compilation);
+}
+
+/// Abre Ajustes en la sección indicada por nombre (`ai`, `api`, `subscriptions`; otro
+/// valor, Apariencia). Lo usa el hook de QA `LSX_QA_OPEN_SETTINGS`.
+pub fn open_named_dialog(
+    window: &mut Window,
+    cx: &mut App,
+    settings: Settings,
+    root: WeakEntity<AppRoot>,
+    name: &str,
+) {
+    let section = match name {
+        "ai" => Section::Ai,
+        "api" => Section::ApiKeys,
+        "subscriptions" => Section::Subscriptions,
+        _ => Section::Appearance,
+    };
+    open_dialog_at(window, cx, settings, root, section);
 }
 
 fn open_dialog_at(
