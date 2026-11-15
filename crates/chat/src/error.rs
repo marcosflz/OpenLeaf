@@ -4,36 +4,28 @@
 
 use std::path::PathBuf;
 
-/// Error unificado del supervisor/cliente de opencode.
+/// Error unificado del agente LaTeX (proceso + RPC).
 #[derive(Debug, thiserror::Error)]
 pub enum ChatError {
-    /// No hay ningún puerto libre en el rango configurado.
-    #[error("no hay puerto libre en el rango {start}..={end}")]
-    NoFreePort { start: u16, end: u16 },
-
-    /// El proceso `opencode.exe` no se pudo lanzar.
-    #[error("no se pudo arrancar opencode ({exe}): {source}")]
+    /// El intérprete del agente no se pudo lanzar.
+    #[error("no se pudo arrancar el agente ({exe}): {source}")]
     Spawn {
         exe: PathBuf,
         #[source]
         source: std::io::Error,
     },
 
-    /// El server no llegó a `healthy` en el tiempo de espera.
-    #[error("el server no respondió healthy en {timeout_s}s (puerto {port})")]
-    HealthTimeout { port: u16, timeout_s: u64 },
+    /// El agente no respondió a `hello` a tiempo.
+    #[error("el agente no respondió en {timeout_s}s")]
+    HealthTimeout { timeout_s: u64 },
 
-    /// Se agotó el backoff de reintentos del supervisor (M1-E1).
-    #[error("no se pudo relanzar opencode tras {attempts} intentos: {last}")]
+    /// Se agotó el backoff de reintentos del supervisor.
+    #[error("no se pudo relanzar el agente tras {attempts} intentos: {last}")]
     RestartExhausted { attempts: usize, last: String },
 
-    /// Error de transporte HTTP.
-    #[error("HTTP: {0}")]
-    Http(#[from] reqwest::Error),
-
-    /// El server respondió con un status inesperado.
-    #[error("respuesta inesperada de {route}: HTTP {status}")]
-    UnexpectedStatus { route: String, status: u16 },
+    /// El agente devolvió un error a una petición.
+    #[error("{0}")]
+    Rpc(String),
 
     /// JSON inválido.
     #[error("JSON: {0}")]
@@ -43,18 +35,13 @@ pub enum ChatError {
     #[error("I/O: {0}")]
     Io(#[from] std::io::Error),
 
-    /// El server habló un protocolo que no entendemos (deriva v1→v2, R5).
+    /// El agente habló un protocolo que no entendemos o se cerró.
     #[error("protocolo: {0}")]
     Protocol(String),
 
     /// Se agotó un plazo esperando algo.
     #[error("timeout esperando {what}")]
     Timeout { what: String },
-
-    /// La configuración efectiva de opencode no se pudo generar
-    /// (`skills.paths`, M2). No es fatal: se cae a la del bundle.
-    #[error("config de opencode: {0}")]
-    ConfigIo(String),
 }
 
 /// Alias de conveniencia.

@@ -88,13 +88,15 @@ pub fn engine_indicator(
         (
             IconName::CircleCheck,
             cx.theme().success,
-            "Motor LaTeX disponible. Pulsa para ver la versión y la ruta.",
+            rust_i18n::t!("ui.app.text.motor_latex_disponible_pulsa_para_ver_la_version")
+                .to_string(),
         )
     } else {
         (
             IconName::TriangleAlert,
             cx.theme().warning,
-            "No hay un motor LaTeX utilizable. Pulsa para reinstalar o revisar la ruta.",
+            rust_i18n::t!("ui.app.text.no_hay_un_motor_latex_utilizable_pulsa_para_rein")
+                .to_string(),
         )
     };
     Button::new("toolbar-engine")

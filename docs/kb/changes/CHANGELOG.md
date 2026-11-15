@@ -2,7 +2,7 @@
 id: kb/changes/changelog
 title: Changelog incremental de OpenLeaf
 status: stable
-updated: 2026-10-27
+updated: 2026-11-13
 source:
   - docs/kb/changes/PLAN-0.2.md
   - git log
@@ -16,6 +16,108 @@ verified: true
 > Registro incremental de cambios con **porqué**, **territorio** y **evidencia**.
 > Formato: `CHG-NNNN`. Estado: `planned` · `doing` · `done` · `reverted`.
 > El estado vivo de las tareas está en `PLAN-0.2.md`; aquí queda la historia.
+
+## CHG-0017 — Pendientes de la interfaz 0.3: editor, visor, árbol y menús contextuales
+
+- **Fecha:** 2026-11-13
+- **Tarea:** P3-UI-3
+- **Estado:** done
+- **Territorio:**
+  - `crates/ui/src/{app,palette,quick_open,project,lib}.rs` y
+    `crates/ui/src/panels/{editor,pdf,tree,problems,bottom,chat}.rs`;
+  - `crates/ui/locales/es.yml`;
+  - `crates/core/src/config.rs` (`pdf.darkPages`, copia del `settings.json` corrupto);
+  - `app/build.rs` y `app/Cargo.toml` (icono);
+  - `docs/img/`.
+- **Qué cambia:**
+  - Editor:
+    - pestaña activa con barra de acento e icono por tipo;
+    - breadcrumb con la sección actual;
+    - `Ctrl+/` para comentar;
+    - menú contextual nativo y «Preguntar a la IA sobre la selección».
+  - Bienvenida con acciones, recientes y atajos.
+  - `Ctrl+P` abre archivos del proyecto (la paleta pasa a `Ctrl+Shift+P`); Guardar todo y
+    Cerrar pestaña en menú y paleta (22 comandos).
+  - Árbol:
+    - abre `.bib`, `.sty`, `.cls`, `.txt`, `.md`…;
+    - menú contextual con abrir, archivo principal, copiar ruta y Explorador;
+    - acciones de cabecera solo al pasar el ratón;
+    - dock inferior redimensionable.
+  - PDF: toolbar flotante, página oscura persistida y menú contextual.
+  - Problemas: menú contextual (ir, copiar, arreglar con IA).
+  - Unos 140 textos movidos a `ui.app.text.*`.
+  - Icono y metadatos embebidos en `latex-studio.exe` (`winresource`). Si falta `rc.exe`, el
+    build avisa y sigue.
+  - `docs/img/hero-dark.png` regenerada con la UI 0.3 y el fixture del agente (sin tokens).
+- **Bugs corregidos:**
+  - `Ctrl+S` estaba registrado con dos acciones distintas;
+  - ids repetidos en SALIDA cuando dos líneas eran iguales;
+  - `stamp()` decía «hora local» y es UTC;
+  - un `settings.json` con JSON inválido se sobrescribía con los valores por defecto en el
+    siguiente guardado. Ahora se copia antes a `settings.json.bak`.
+- **Por qué:** cerrar lo pendiente del rediseño (fases 2 y 3 del plan).
+- **Evidencia:**
+  - Gates verdes: `fmt`, `clippy -D warnings`, `cargo test --workspace` y `kb check`.
+  - Tests nuevos: comentar líneas, rango de líneas, sección del breadcrumb, lenguaje por
+    extensión, apertura rápida, extensiones del árbol, página oscura y copia del
+    `settings.json` corrupto.
+  - Capturas locales `shots/p4-*.png`: pestaña con acento, breadcrumb, nombre completo en
+    el árbol y toolbar flotante del PDF.
+  - Los clics de botones y menús contextuales no se pudieron probar automatizados en esta
+    sesión: la inyección de entrada está bloqueada. Revisión manual pendiente.
+
+## CHG-0016 — Interfaz minimalista estilo VS Code y repaso de menús
+
+- **Fecha:** 2026-11-13
+- **Tarea:** P3-UI-1 / P3-UI-2
+- **Estado:** done
+- **Territorio:** `crates/ui/src/{theme,app,palette,settings_ui,lib,panels}.rs`,
+  `crates/ui/src/panels/{pane,tree,editor,pdf,bottom,chat}.rs`, `crates/core/src/config.rs`
+  (acento por defecto), `crates/ui/locales/es.yml`.
+- **Qué cambia:**
+  - Paleta neutra «Modern» (oscuro y claro) y acento `#0078D4`.
+  - Una sola barra superior (menús + buscador del proyecto + acciones), en lugar de tres filas.
+  - Títulos de panel pequeños en mayúsculas; cabecera del árbol con el nombre del proyecto.
+  - Editor sin línea de estado duplicada; el PDF ya no muestra métricas de depuración.
+  - Cabecera del chat compacta con modos legibles; pestañas inferiores de texto con subrayado.
+  - Ajustes › Editor con fuente, tamaño, tabulación y ajuste de línea, ahora conectados.
+  - Menús Archivo · Editar · Ver · LaTeX · IA · Ayuda.
+  - Paleta de 19 comandos con atajos.
+  - Ctrl+Q pide confirmar si hay cambios sin guardar.
+  - Se retiran el módulo `spike`, `PlaceholderPanel` y `spike-shell`.
+- **Por qué:** petición de interfaz minimalista y moderna sin cambiar la estructura, y
+  repaso de menús y funcionalidades (bugs de la auditoría: Ctrl+Q, métricas en el PDF,
+  ajustes de editor muertos).
+- **Evidencia:**
+  - Gates verdes (`fmt`, `clippy -D warnings`, `cargo test --workspace`, `kb check`).
+  - Capturas locales `shots/p3-dark-3.png` y `shots/p3-light-3.png` (fuera de git).
+
+## CHG-0015 — Agente LaTeX propio sobre nas-adk (adiós opencode)
+
+- **Fecha:** 2026-11-13
+- **Tarea:** P3-AI-1
+- **Estado:** done
+- **Territorio:** `python/lsx_agent/**`, `crates/chat/**`, `crates/core/src/{config,root,project}.rs`,
+  `crates/ui/src/{ai_setup,settings_ui,app}.rs`, `crates/ui/src/panels/chat.rs`, `scripts/get-agent.ps1`,
+  `xtask/src/{dist,main}.rs`, `installer/`, `.github/workflows/installer.yml`, docs.
+- **Qué cambia:**
+  - El chat lanza `python -m lsx_agent` (nas-adk 0.3.0) por stdio NDJSON, en lugar de
+    `opencode serve`.
+  - Herramientas solo de LaTeX (compile con errores parseados, edit/write con diff y permiso,
+    tlmgr, kpsewhich, skills), sin shell genérico.
+  - Revert por checkpoints.
+  - Proveedores OpenCode Go, OpenRouter, Anthropic API y suscripción de Claude, sin default.
+  - Ajustes › IA con claves y prueba de modelo.
+  - Se elimina `ai.port`.
+- **Por qué:** agente más ligero y especializado; menos superficie; sin puertos ni SSE
+  ([ADR-001](../../decisions/ADR-001-agente-nas-adk.md)).
+- **Evidencia:**
+  - Rust: `cargo test --workspace` verde, incluidos `agent_fixture` y `agent_process`
+    (proceso Python real).
+  - Python: 26 tests de `pytest`.
+  - Fixture `fixtures/agent/events/agent-fix-edit.jsonl`.
+  - `agent/` pasa de unos 180 MB a unos 74 MB.
+  - Python embebido verificado con `hello`/`agent.list`.
 
 ## CHG-0014 — Capturas de producto en el README
 

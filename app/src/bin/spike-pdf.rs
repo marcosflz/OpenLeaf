@@ -175,6 +175,7 @@ impl SpikeC1 {
                 PdfPanelEvent::InverseJump(jump) => {
                     format!("inverse → {}:{}", jump.file.display(), jump.line)
                 }
+                PdfPanelEvent::DarkPagesChanged(dark) => format!("página oscura: {dark}"),
             };
             if matches!(event, PdfPanelEvent::DocumentReady { .. })
                 && let Some(page) = this.auto_page.take()

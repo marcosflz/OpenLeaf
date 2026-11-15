@@ -126,7 +126,7 @@ verified: true
   refleja en botones/foco/selección; no se añaden hex a los paneles.
 - **Evidencia:** tests de `theme.rs` (incluido `#[gpui_kit::test]`), presets validados.
 
-### P2-AI-1 — Configuración de IA y conexiones opencode
+### P2-AI-1 — Configuración de IA y conexiones opencode (sustituida por P3-AI-1)
 
 - **Estado:** ✅ DONE (2026-10-24; tests de parser; live pendiente de `agent/opencode.exe` en el repo)
 - **Territorio:** `crates/ui/src/ai_setup.rs` (nuevo), `settings_ui.rs`, `locales/es.yml`
@@ -142,7 +142,7 @@ verified: true
   - Si falta `agent/opencode.exe`: mensaje accionable + botón para abrir `agent/`.
 - **Aceptación:** parsers testeados con salidas representativas; sin binario en el repo
   no se pudo probar el flujo live. No se muestra “Sin catálogo”.
-- **Evidencia:** 8 tests de `ai_setup.rs`, `architecture/04-chat-opencode.md`.
+- **Evidencia:** 8 tests de `ai_setup.rs`, `architecture/04-chat-agente.md` (antes 04-chat-opencode).
 
 ### P2-AI-2 — Persistir modelo/agente del picker del chat
 
@@ -211,6 +211,44 @@ verified: true
   - tests de cierre con dirty y persistencia de modelo;
   - gates fmt/clippy/test.
 - **Aceptación:** PASS/FAIL explícito y bugs reproducibles con tarea de seguimiento.
+
+### P3-AI-1 — Agente LaTeX propio sobre nas-adk (0.3)
+
+- **Estado:** ✅ DONE (2026-11-13)
+- **Territorio:** `python/lsx_agent/**`, `crates/chat/**`, `crates/ui` (chat, ajustes IA),
+  `crates/core` (rutas y `ai`), distribución.
+- **Entrega:**
+  - sidecar NDJSON;
+  - herramientas LaTeX;
+  - permisos con diff;
+  - revert;
+  - 4 proveedores sin default;
+  - Python embebido;
+  - ADR-001 y nota `architecture/04-chat-agente.md`.
+- **Aceptación:**
+  - gates verdes;
+  - tests de Python;
+  - fixture del agente reducida por `Conversation`;
+  - proceso real arrancado desde el servicio.
+- **Pendiente:** E2E manual con cada proveedor real (gasta tokens).
+- **Evidencia:** CHG-0015.
+
+### P3-UI-3 — Pendientes de la interfaz 0.3
+
+- **Estado:** ✅ DONE (2026-11-13)
+- **Entrega:**
+  - breadcrumb y pestaña activa con acento;
+  - bienvenida;
+  - `Ctrl+P` para abrir archivos;
+  - menús contextuales en editor, árbol, PDF y problemas;
+  - PDF con toolbar flotante y página oscura;
+  - dock inferior redimensionable;
+  - textos a `es.yml`;
+  - icono del exe.
+- **Pendiente:**
+  - revisión manual de clics en menús contextuales y toolbar flotante;
+  - textos `&'static str` restantes.
+- **Evidencia:** CHG-0017.
 
 ## Orden de ejecución del swarm
 

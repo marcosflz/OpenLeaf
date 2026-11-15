@@ -87,7 +87,7 @@ pub struct Settings {
     /// Visor PDF.
     #[serde(default)]
     pub pdf: PdfSettings,
-    /// Asistente IA (opencode).
+    /// Asistente IA (agente LaTeX sobre nas-adk).
     #[serde(default)]
     pub ai: AiSettings,
     /// Shell: tema, idioma, layout del dock.
@@ -293,6 +293,9 @@ pub struct PdfSettings {
     /// Doble clic abre el PDF en el visor externo.
     #[serde(default = "default_true")]
     pub open_external_on_double_click: bool,
+    /// Páginas en oscuro (luminosidad invertida conservando el tono).
+    #[serde(default)]
+    pub dark_pages: bool,
     /// Campos desconocidos.
     #[serde(flatten)]
     pub extra: ExtraFields,
@@ -317,25 +320,28 @@ impl Default for PdfSettings {
             zoom: pdf_zoom(),
             max_cache_mb: pdf_cache(),
             open_external_on_double_click: true,
+            dark_pages: false,
             extra: ExtraFields::new(),
         }
     }
 }
 
-/// Asistente IA (opencode).
+/// Asistente IA: agente LaTeX (`python/lsx_agent`, sobre nas-adk).
+///
+/// No hay proveedor por defecto: el chat usa el `model` elegido si su
+/// proveedor está configurado (clave en `config/secrets/ai.json` o CLI
+/// `claude`), o el primero configurado; sin ninguno pide configurarlo.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiSettings {
-    /// Arrancar el servidor al abrir la app.
+    /// Arrancar el agente al abrir la app.
     #[serde(default = "default_true")]
     pub auto_start: bool,
-    /// Puerto fijo; `None` = puerto libre.
+    /// Modelo preferido `provider/model` (`opencode/deepseek-v4.1-flash`,
+    /// `anthropic/claude-sonnet-5-5`, `claude-code/default`…).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub port: Option<u16>,
-    /// Modelo preferido `provider/model`.
-    #[serde(default = "ai_model", skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// Agente de opencode.
+    /// Modo del agente: `build` | `latex-fix` | `ask`.
     #[serde(default = "ai_agent")]
     pub agent: String,
     /// `ask` | `auto`.
@@ -356,17 +362,6 @@ fn ai_agent() -> String {
     "build".to_owned()
 }
 
-/// Modelo por defecto del chat cuando el usuario no elige otro en Ajustes.
-///
-/// La app lo manda explícitamente en cada prompt: sin esto, opencode resuelve
-/// el modelo de su configuración global (el del usuario) y el chat dejaría de
-/// usar el que documenta el producto.
-pub const DEFAULT_AI_MODEL: &str = "opencode-go/deepseek-v4.1-flash";
-
-fn ai_model() -> Option<String> {
-    Some(DEFAULT_AI_MODEL.to_owned())
-}
-
 fn ai_permission_preset() -> String {
     "ask".to_owned()
 }
@@ -379,8 +374,7 @@ impl Default for AiSettings {
     fn default() -> Self {
         Self {
             auto_start: true,
-            port: None,
-            model: ai_model(),
+            model: None,
             agent: ai_agent(),
             permission_preset: ai_permission_preset(),
             show_reasoning: true,
@@ -471,7 +465,7 @@ fn ui_theme() -> String {
 }
 
 fn ui_accent() -> String {
-    "#4C8DFF".to_owned()
+    "#0078D4".to_owned()
 }
 
 fn ui_language() -> String {
@@ -506,9 +500,9 @@ pub struct AdvancedSettings {
     /// Override de `tex/bin` (rutas raras).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tex_bin_override: Option<String>,
-    /// Override del ejecutable de opencode.
+    /// Intérprete Python alternativo para el agente (depuración).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub opencode_exe_override: Option<String>,
+    pub python_override: Option<String>,
     /// Campos desconocidos.
     #[serde(flatten)]
     pub extra: ExtraFields,
@@ -523,7 +517,7 @@ impl Default for AdvancedSettings {
         Self {
             log_level: advanced_log_level(),
             tex_bin_override: None,
-            opencode_exe_override: None,
+            python_override: None,
             extra: ExtraFields::new(),
         }
     }
@@ -572,12 +566,25 @@ impl Settings {
         let value: Value = match serde_json::from_str(&text) {
             Ok(value) => value,
             Err(err) => {
+                // El siguiente guardado pisaría el fichero con los defaults:
+                // se conserva una copia para poder recuperar recientes y ajustes.
+                let backup = path.with_extension("json.bak");
+                let kept = std::fs::write(&backup, &text).is_ok();
                 warnings.push(ConfigWarning::new(
                     "",
-                    format!(
-                        "{} no es JSON válido ({err}); se usan los valores por defecto",
-                        path.display()
-                    ),
+                    if kept {
+                        format!(
+                            "{} no es JSON válido ({err}); se usan los valores por defecto \
+                             (copia del original en {})",
+                            path.display(),
+                            backup.display()
+                        )
+                    } else {
+                        format!(
+                            "{} no es JSON válido ({err}); se usan los valores por defecto",
+                            path.display()
+                        )
+                    },
                 ));
                 return (Self::default(), warnings);
             }
@@ -698,14 +705,12 @@ impl Settings {
             &mut warnings,
         );
 
-        if let Some(port) = self.ai.port
-            && port < 1024
+        // Migración 0.3: el proveedor `opencode-go` de opencode es `opencode`
+        // en el agente nas-adk (mismo servicio y mismos modelos).
+        if let Some(model) = self.ai.model.as_deref()
+            && let Some(rest) = model.strip_prefix("opencode-go/")
         {
-            warnings.push(ConfigWarning::new(
-                "ai.port",
-                format!("el puerto {port} es privilegiado; se usará un puerto libre"),
-            ));
-            self.ai.port = None;
+            self.ai.model = Some(format!("opencode/{rest}"));
         }
 
         let engine = self.latex.engine.to_ascii_lowercase();
@@ -947,33 +952,46 @@ mod tests {
         let text = std::fs::read_to_string(Settings::path(&root)).expect("leer");
         let value: Value = serde_json::from_str(&text).expect("json");
         assert_eq!(value["$schemaVersion"], Value::from(1));
-        assert_eq!(value["ui"]["accent"], Value::from("#4C8DFF"));
+        assert_eq!(value["ui"]["accent"], Value::from("#0078D4"));
         assert_eq!(value["ui"]["dock"], Value::from(Map::new()));
         assert_eq!(value["latex"]["autoCompile"], Value::from(true));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// El chat arranca con el modelo documentado, incluso si el `settings.json`
-    /// del usuario es anterior y no trae `model`; si el usuario elige otro, manda
-    /// su elección.
+    /// Sin proveedor por defecto: un `settings.json` sin `model` deja el chat
+    /// sin modelo (lo elige el catálogo de proveedores configurados); la elección
+    /// del usuario manda, y el `opencode-go/…` de 0.2 migra a `opencode/…`.
     #[test]
-    fn el_chat_usa_el_modelo_documentado_salvo_eleccion_explicita() {
+    fn el_modelo_no_se_fuerza_y_migra_el_proveedor_de_opencode() {
         let (root, dir) = temp_root("modelo");
         write_settings(
             &dir,
             r#"{ "$schemaVersion": 1, "ai": { "agent": "build" } }"#,
         );
         let (loaded, _) = Settings::load(&root);
-        assert_eq!(loaded.ai.model.as_deref(), Some(DEFAULT_AI_MODEL));
+        assert_eq!(loaded.ai.model, None);
 
         write_settings(
             &dir,
-            r#"{ "$schemaVersion": 1, "ai": { "model": "ollama/qwen2.5-coder:7b" } }"#,
+            r#"{ "$schemaVersion": 1, "ai": { "model": "anthropic/claude-sonnet-5-5" } }"#,
         );
         let (loaded, warnings) = Settings::load(&root);
-        assert_eq!(loaded.ai.model.as_deref(), Some("ollama/qwen2.5-coder:7b"));
+        assert_eq!(
+            loaded.ai.model.as_deref(),
+            Some("anthropic/claude-sonnet-5-5")
+        );
         assert!(warnings.is_empty(), "avisos inesperados: {warnings:?}");
+
+        write_settings(
+            &dir,
+            r#"{ "$schemaVersion": 1, "ai": { "model": "opencode-go/deepseek-v4.1-flash" } }"#,
+        );
+        let (loaded, _) = Settings::load(&root);
+        assert_eq!(
+            loaded.ai.model.as_deref(),
+            Some("opencode/deepseek-v4.1-flash")
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -994,6 +1012,10 @@ mod tests {
         assert_eq!(loaded, Settings::default());
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].message.contains("JSON válido"));
+        // El original queda a salvo antes de que un guardado lo pise.
+        let backup = std::fs::read_to_string(dir.join("config").join("settings.json.bak"))
+            .expect("copia del fichero corrupto");
+        assert_eq!(backup, "{ esto no es json }");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1056,7 +1078,7 @@ mod tests {
                 "editor": { "fontSize": 999.0, "tabSize": 0 },
                 "latex": { "debounceMs": 90000 },
                 "pdf": { "zoom": 100.0, "maxCacheMB": 1 },
-                "ai": { "port": 80 },
+                "ai": { "permissionPreset": "siempre" },
                 "advanced": { "logLevel": "verbose" }
             }"#,
         );
@@ -1066,7 +1088,7 @@ mod tests {
         assert_eq!(loaded.latex.debounce_ms, 10_000);
         assert_eq!(loaded.pdf.zoom, 8.0);
         assert_eq!(loaded.pdf.max_cache_mb, 16);
-        assert_eq!(loaded.ai.port, None);
+        assert_eq!(loaded.ai.permission_preset, "ask");
         assert_eq!(loaded.advanced.log_level, "info");
         assert_eq!(warnings.len(), 7, "avisos: {warnings:?}");
         let _ = std::fs::remove_dir_all(&dir);
@@ -1097,7 +1119,7 @@ mod tests {
         settings.ai.permission_preset = "siempre".into();
         let warnings = settings.validate();
         assert_eq!(settings.ui.theme, "dark");
-        assert_eq!(settings.ui.accent, "#4C8DFF");
+        assert_eq!(settings.ui.accent, "#0078D4");
         assert_eq!(settings.latex.engine, "texlive");
         assert_eq!(settings.pdf.zoom_mode, "fit-width");
         assert_eq!(settings.ui.language, "es");

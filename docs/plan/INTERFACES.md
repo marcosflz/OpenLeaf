@@ -174,75 +174,78 @@ pub trait PdfRender: Send + Sync { /* renders futuros: hayro hoy, pdfium M4 */ }
 
 ---
 
-## 5. lsx-chat (opencode)
+## 5. lsx-chat (agente LaTeX sobre nas-adk)
+
+> Desde 0.3 el chat no usa opencode ([ADR-001](../decisions/ADR-001-agente-nas-adk.md)).
+> Nota viva: `docs/kb/architecture/04-chat-agente.md`. Esta sección refleja el código real
+> (`crates/chat/src/{service,sidecar,events}.rs`).
 
 ### 5.1 Ciclo de vida
 
 ```rust
-pub struct ChatConfig {
-    pub opencode_exe: PathBuf, pub config_json: PathBuf,
-    pub project_cwd: PathBuf, pub port: Option<u16>,  // None → puerto libre aleatorio
-    pub password: String,                              // OPENCODE_SERVER_PASSWORD
+pub struct ChatConfig {               // service.rs
+    pub python: PathBuf, pub python_path: Vec<PathBuf>, pub agent_cwd: PathBuf,
+    pub data_dir: PathBuf, pub secrets: Option<PathBuf>, pub skills_dir: Option<PathBuf>,
+    pub log_file: Option<PathBuf>, pub project_cwd: PathBuf, pub project_name: String,
+    pub model: Option<String>,        // "proveedor/modelo"; None → el primero configurado
+    pub agent: String,                // build | latex-fix | ask
+    pub health_timeout: Duration, pub restart_delays: Vec<Duration>,
+    pub history_limit: usize, pub path_prepend: Vec<PathBuf>, pub record_dir: Option<PathBuf>,
 }
 pub enum ServerState { Stopped, Starting, Ready { version: String }, Restarting { attempt: u8 }, Error(String) }
-pub struct ChatSupervisor; // start()/stop()/restart(); backoff 0.5/1/2/5s ×3; health GET /global/health
+pub struct AgentSupervisor;           // sidecar.rs: start/ensure_alive (0.5/1/2/5 s)/stop; job object
 pub enum ChatCmd {
-    EnsureSession { project: PathBuf },
-    NewSession, SwitchSession { id: String }, DeleteSession { id: String },
-    SendPrompt { text: String, context: Vec<PromptContext> },
-    Abort, RespondPermission { permission_id: String, response: PermissionResponse, remember: bool },
-    RefreshProviders, SetModel { provider: String, model: String }, SetAgent { name: String },
+    Start, Stop, NewSession, SwitchSession { id: String }, DeleteSession { id: String },
+    ListSessions, RefreshProviders, SetModel { provider: String, model: String },
+    SetAgent { name: String }, Prompt { text: String, agent: Option<String> }, Abort,
+    Permission { request_id: String, reply: PermissionReply },
+    Revert { message_id: String }, Unrevert,
 }
-pub enum PermissionResponse { Once, Always, Reject }
-pub enum PromptContext { CurrentFile { path: PathBuf }, Selection { path: PathBuf, range: TextRange, text: String }, DiagnosticsSummary }
+pub enum PermissionReply { Once, Always, Reject }
 ```
 
-### 5.2 Eventos de dominio (SSE crudo → `reducer` → estos)
+El contexto (archivo activo, selección, diagnósticos) se compone en texto en
+`prompt.rs` (`compose_prompt_with_context`, `compose_fix_prompt`); no hay `PromptContext`.
+
+### 5.2 Eventos de dominio
 
 ```rust
 pub enum ChatEvent {
     Server(ServerState),
-    Sessions(Vec<SessionInfo>),                 // GET /session
-    Message(IncomingMessage),                   // creado/completado (rol, id, modelo)
-    PartUpdated(PartUpdate),                    // texto (delta o full), reasoning, tool, file
-    Permission(PermissionRequest),              // {id, tool, args, diff?}
-    SessionIdle { session_id: String },
-    Providers(ProvidersInfo),                  // /config/providers + /provider
-    Agents(Vec<AgentInfo>),                     // GET /agent
-    Error { message: String, recoverable: bool },
+    Ready { version: String, model: Option<ModelRef>, agent: String },
+    SessionActivated { session: SessionInfo }, SessionCleared,
+    Stream(Box<SpikeEvent>),                       // tabla I-4 (events.rs)
+    History { session_id: String, events: Vec<SpikeEvent> },
+    Sessions(Vec<SessionInfo>), Providers(ProviderCatalog), Agents(Vec<AgentInfo>),
+    SelectionChanged { model: Option<ModelRef>, agent: String },
+    Reverted { message_id: String }, Unreverted,
+    Error { message: String, recoverable: bool }, Stopped,
 }
-pub enum PartUpdate {
-    Text { message_id: String, part_id: String, markdown: String, streaming: bool },
-    Reasoning { message_id: String, part_id: String, text: String, done: bool },
-    Tool { message_id: String, part_id: String, name: String, state: ToolState, input_summary: String, output: Option<String>, diff: Option<DiffData> },
-    File { message_id: String, part_id: String, path: PathBuf },
-}
-pub enum ToolState { Pending, Running, Completed, Error }
-pub struct DiffData { pub path: PathBuf, pub hunks: Vec<Hunk>, pub before: String, pub after: String }
 ```
 
-### 5.3 Endpoints (API v1, opencode 1.18.30) — tablas operativas
+`SpikeEvent`/`SpikePartUpdate` (texto, razonamiento, tool con `diff`, permiso con `diff`,
+`SessionIdle`, `SessionError`…) siguen la tabla I-4 congelada en §12 (M0-S4). El reductor es
+`conversation.rs`.
 
-| Uso | Método y ruta | Notas |
+### 5.3 Métodos RPC del agente
+
+| Uso | Método | Respuesta |
 |---|---|---|
-| Salud | `GET /global/health` | `{healthy, version}`; polling al arrancar |
-| Eventos | `GET /event` | SSE; primer evento `server.connected` |
-| Sesiones | `POST /session`, `GET /session`, `GET /session/:id`, `PATCH /session/:id`, `DELETE /session/:id` | `PATCH {title}` |
-| Historial | `GET /session/:id/message?limit=` | `{info, parts}[]` |
-| Enviar | `POST /session/:id/prompt_async` | body `{ messageID?, model?, agent?, system?, tools?, parts }`; 204 |
-| Abortar | `POST /session/:id/abort` | botón stop |
-| Permisos | `POST /session/:id/permissions/:permissionID` | body `{response, remember?}` |
-| Estado | `GET /session/status` | mapa por sesión |
-| Catálogos | `GET /config/providers`, `GET /provider`, `GET /agent` | pickers |
-
-**Tarea obligatoria M0-S4**: grabar stream real (prompt → texto → tool bash → permiso de edición) en `fixtures/opencode/events/*.jsonl` y **fijar aquí la tabla de mapeo evento→`ChatEvent`** con los nombres exactos de `type` (verificar contra `types.gen.ts` del SDK). Sin esa tabla, no se implementa el reducer.
+| Salud | `hello` | `{healthy, version, nasAdk}` |
+| Catálogos | `config.providers`, `provider.status`, `agent.list` | forma de opencode v1 |
+| Sesiones | `session.list {directory}`, `session.get`, `session.create {title, directory}`, `session.delete` | `SessionInfo` |
+| Historial | `session.messages {id, limit}` | `[{info, parts}]` |
+| Enviar | `session.prompt {id, text, model:{providerID, modelID}, agent}` | `true`; el turno sigue por eventos |
+| Abortar | `session.abort {id}` | `true` si había turno |
+| Permisos | `permission.reply {sessionID, requestID, reply}` | `true` |
+| Revert | `session.revert {id, messageID}`, `session.unrevert {id}` | `SessionInfo` |
 
 ### 5.4 Protocolo de proceso
 
-- Args: `serve --hostname 127.0.0.1 --port {p}`; env `OPENCODE_CONFIG`, `OPENCODE_SERVER_PASSWORD`, `PATH+=tex\bin\windows;agent`.
-- cwd = raíz del proyecto activo. Client: `reqwest` con basic auth (`opencode:{password}`).
-- Parseo SSE propio: split por `\n\n`, campos `event:`/`data:`, `data:` multilínea concatenado; reconexión 1s/2s/5s y refetch de historial si hubo gap.
-- Cierre: kill + job object; `stop()` espera 3s y fuerza.
+- `agent\python\python.exe -P -s -m lsx_agent --data-dir config\agent --secrets config\secrets\ai.json --skills assets\skills --log logs\agent.log`.
+- cwd = `agent\` (nunca el proyecto); `PATH` = `tex\bin\windows;…`; `PYTHONUTF8=1`.
+- NDJSON por stdio: `{id, method, params}` → `{id, result|error}`; eventos `{type, properties}`.
+- Cierre: soltar stdin (salida limpia) y, si no basta en 3 s, kill del job object.
 
 ---
 

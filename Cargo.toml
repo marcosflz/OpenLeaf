@@ -41,7 +41,6 @@ ropey = "1.6"
 notify = "8"
 rfd = "0.17"
 tree-sitter = "0.26"   # pin que usa gpui-component 0.7.3; 0.27 rompe semver 0.x
-reqwest = { version = "0.13", features = ["json", "stream"] }
 similar = "2"
 
 # --- Spikes M0 / utilidades ---

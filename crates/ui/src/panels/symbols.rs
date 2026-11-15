@@ -245,7 +245,9 @@ impl SymbolsPanel {
     ) -> Self {
         let query = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("Buscar símbolo (p. ej. «alfa», «suma», «flecha»)…")
+                .placeholder(
+                    rust_i18n::t!("ui.app.text.buscar_simbolo_p_ej_alfa_suma_flecha").to_string(),
+                )
                 .clean_on_escape()
         });
         let sub = cx.subscribe_in(&query, window, |this, state, event, _window, cx| {
@@ -320,7 +322,7 @@ impl SymbolsPanel {
                 .p_3()
                 .text_size(px(12.))
                 .text_color(cx.theme().muted_foreground)
-                .child("Sin símbolos para esa búsqueda.")
+                .child(rust_i18n::t!("ui.app.text.sin_simbolos_para_esa_busqueda").to_string())
                 .into_any_element();
         }
         v_flex()
@@ -382,7 +384,10 @@ impl Render for SymbolsPanel {
                         div()
                             .text_size(px(11.))
                             .text_color(cx.theme().muted_foreground)
-                            .child("Clic para insertar en el cursor"),
+                            .child(
+                                rust_i18n::t!("ui.app.text.clic_para_insertar_en_el_cursor")
+                                    .to_string(),
+                            ),
                     ),
             )
             .child(self.render_categories(cx))

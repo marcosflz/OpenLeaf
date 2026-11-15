@@ -7,12 +7,14 @@ description: Usar cuando se implemente o pruebe el flujo Arreglar errores con IA
 
 Fuente: `docs/plan/PLAN-MAESTRO.md` §4.1 / §4.3 / §5.5; `docs/plan/TAREAS.md` M1-E5, M2-6, M2-12 y M1-F4 (wizard).
 
-## El agente latex-fix
+## El modo latex-fix
 
-- Definición existente del producto: `workspace\.opencode\agents\latex-fix.md` (verificado en el repo; activo del usuario — NO se toca desde el repo de desarrollo).
-- Qué define hoy: description de reparación, `permission.edit: allow`, bash con `latexmk`/`pdflatex`/`tlmgr`/`kpsewhich` permitidos, y el proceso compilar → leer log → `tlmgr install` → edición mínima → verificar → informar.
-- M1-F4: el wizard de proyecto nuevo genera una plantilla equivalente en `.opencode\agent\latex-fix.md` del proyecto; PLAN §5.5 la promoverá a `assets\templates\project\.opencode\agents\latex-fix.md` — `TODO(M1-F4): verificar` la ruta final al implementarla.
-- Agentes ofrecidos en el chat: `build`, `plan`, `latex-fix` (PLAN §4.1); settings `ai.agent` por defecto `build`.
+- Es un **modo** del agente propio (`python/lsx_agent/prompts.py`, `FIX`), no un archivo
+  `.opencode/agents/latex-fix.md` (eso era 0.2 con opencode).
+- Proceso: compile → causa raíz del primer error → `kpsewhich`/`tlmgr_install` o `edit` mínimo
+  → recompilar (hasta 5 ciclos) → informar.
+- El panel lo envía con `ChatCmd::Prompt { agent: Some("latex-fix") }` desde «Arreglar errores».
+- Modos ofrecidos: `build`, `latex-fix` y `ask` (`ai.agent`, por defecto `build`).
 
 ## Composición del prompt
 
@@ -24,16 +26,16 @@ Fuente: `docs/plan/PLAN-MAESTRO.md` §4.1 / §4.3 / §5.5; `docs/plan/TAREAS.md`
 ## Flujo E2E (pasos 3, 8 y 9 del guion)
 
 1. La compilación falla → status rojo + botón "Arreglar errores con IA" (M1-D3/E5).
-2. Se abre/crea sesión de chat con el agente `latex-fix` y se envía el prompt (`POST /session/:id/prompt_async`) — enviar no requiere permiso.
-3. El agente edita un `.tex` → llega el evento de permiso por SSE → modal con diff (M1-E4) → aprobar con once/always/deny (+ remember).
+2. Se abre o crea la sesión y se envía el prompt en modo `latex-fix` (`session.prompt`); enviar no requiere permiso.
+3. El agente quiere editar un `.tex` → `permission.asked` con el diff → modal (M1-E4) → once/always/reject.
 4. Aprobado → el archivo cambia en disco → watcher (`FsEvent`) → el editor recarga si está limpio; si dirty → modal de conflicto (3 opciones, M1-B2).
 5. AutoCompile (debounce 400 ms) → recompila; si queda verde, la tool card final y la status bar lo reflejan.
 - Rechazado → el archivo no cambia; el chat debe informar del rechazo.
 
 ## Probar sin gastar tokens reales
 
-- `cargo run -p xtask -- chat-replay` — `TODO(M0-S4): verificar`/implementar: reproduce `fixtures/opencode/events/*.jsonl` contra el reducer. Incluir en las fixtures un caso "tool write + permiso + edición" para cubrir este flujo.
-- Tests de integración con `wiremock` sirviendo REST/SSE grabados (PLAN §6.1); nunca llamar a un proveedor real desde tests.
+- `cargo run -p xtask -- chat-replay fixtures/agent/events/agent-fix-edit.jsonl`: el flujo latex-fix → read → edit con permiso → respuesta.
+- `cd python && uv run pytest -q`: modelo guionizado (`ScriptedLlm`); nunca llamar a un proveedor real desde tests.
 - Humo manual con costo mínimo: modelo barato y prompt trivial; documentar cualquier gasto en el reporte del PR.
 
 ## UX y errores

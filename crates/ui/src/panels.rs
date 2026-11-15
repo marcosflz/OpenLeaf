@@ -11,11 +11,9 @@
 //! - [`bottom`]: dock inferior del explorador (M2) con las pestañas
 //!   PROBLEMAS · SALIDA · SÍMBOLOS.
 //! - [`symbols`]: paleta de símbolos LaTeX (M2) que inserta en el editor.
-//! - [`placeholder`]: hojas aún sin stream propio.
 //! - [`pane`]: contrato común ([`Pane`], [`PaneState`], [`PaneEvent`]).
 //!
-//! Integración en el dock: [`tree::TreePanel`] y [`placeholder::PlaceholderPanel`]
-//! los monta `crate::app::AppRoot`; los paneles de editor/PDF/chat exponen su API
+//! Integración en el dock: [`tree::TreePanel`] lo monta `crate::app::AppRoot`; los paneles de editor/PDF/chat exponen su API
 //! de comandos con callbacks y el shell los cablea por slots (`EditorSlot`,
 //! `PdfSlot`, `ChatSlot`).
 
@@ -24,7 +22,6 @@ pub mod chat;
 pub mod editor;
 pub mod pane;
 pub mod pdf;
-pub mod placeholder;
 pub mod problems;
 pub mod symbols;
 pub mod tree;
@@ -33,6 +30,5 @@ pub use bottom::{BottomPanel, BottomTab};
 pub use chat::{ChatPanel, ChatPanelConfig};
 pub(crate) use pane::pane_container;
 pub use pane::{Pane, PaneEvent, PaneState};
-pub use placeholder::PlaceholderPanel;
 pub use symbols::SymbolsPanel;
 pub use tree::TreePanel;

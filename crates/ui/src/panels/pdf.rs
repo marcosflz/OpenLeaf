@@ -38,10 +38,12 @@ use std::time::{Duration, Instant, SystemTime};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use gpui_kit::component::{
-    ActiveTheme as _, IconName,
-    button::Button,
+    ActiveTheme as _, IconName, Sizable as _,
+    button::{Button, ButtonVariants as _},
     dock::{BasePanel, Panel as DockPanel, PanelEvent},
-    h_flex, v_flex,
+    h_flex,
+    menu::{ContextMenuExt as _, PopupMenuItem},
+    v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -214,6 +216,8 @@ pub enum PdfPanelEvent {
     ZoomChanged { zoom: f32, mode: ZoomMode },
     /// Ctrl+clic sobre el PDF resolvió una posición del `.tex`.
     InverseJump(InverseJump),
+    /// El usuario cambió «página oscura» (para persistir en settings).
+    DarkPagesChanged(bool),
 }
 
 /// Callback de salto inverso (Ctrl+clic): recibe el origen resuelto.
@@ -357,6 +361,8 @@ pub struct PdfPanel {
     focus: FocusHandle,
     /// Mostrar barra de herramientas (el shell puede apagarla).
     show_toolbar: bool,
+    /// Páginas en oscuro (`pdf.darkPages`).
+    dark_pages: bool,
 }
 
 impl PdfPanel {
@@ -398,7 +404,30 @@ impl PdfPanel {
             last_frame_at: None,
             focus: cx.focus_handle(),
             show_toolbar: true,
+            dark_pages: false,
         }
+    }
+
+    /// Activa o desactiva las páginas en oscuro (re-renderiza las visibles).
+    pub fn set_dark_pages(&mut self, dark: bool, cx: &mut Context<Self>) {
+        if self.dark_pages == dark {
+            return;
+        }
+        self.dark_pages = dark;
+        self.images.clear();
+        self.inflight.clear();
+        cx.notify();
+    }
+
+    /// ¿Páginas en oscuro?
+    pub fn dark_pages(&self) -> bool {
+        self.dark_pages
+    }
+
+    fn toggle_dark_pages(&mut self, cx: &mut Context<Self>) {
+        let dark = !self.dark_pages;
+        self.set_dark_pages(dark, cx);
+        cx.emit(PdfPanelEvent::DarkPagesChanged(dark));
     }
 
     /// Muestra u oculta la toolbar propia del panel.
@@ -1003,6 +1032,7 @@ impl PdfPanel {
         let scale_lo = self.scale_lo();
         let hi_milli = scale_bucket(scale_hi);
         let lo_milli = scale_bucket(scale_lo);
+        let dark = self.dark_pages;
 
         for page in start..end {
             let page = page as u32;
@@ -1039,8 +1069,10 @@ impl PdfPanel {
                         .await;
                     let image = match bitmap {
                         Ok(bitmap) => Some(
-                            cx.background_spawn(async move { bitmap_to_render_image(&bitmap) })
-                                .await,
+                            cx.background_spawn(async move {
+                                bitmap_to_render_image(&bitmap, dark)
+                            })
+                            .await,
                         ),
                         Err(err) => {
                             tracing::debug!(page, scale = scale_lo, %err, "render progresivo falló");
@@ -1049,7 +1081,8 @@ impl PdfPanel {
                     };
                     this.update(cx, |this, cx| {
                         this.inflight.remove(&(page, lo_milli));
-                        if let Some(image) = image {
+                        // Un render de antes de cambiar «página oscura» se descarta.
+                        if let Some(image) = image.filter(|_| this.dark_pages == dark) {
                             this.images.insert((page, lo_milli), Arc::new(image));
                             cx.notify();
                         }
@@ -1085,7 +1118,7 @@ impl PdfPanel {
                 let elapsed_ms = t0.elapsed().as_secs_f64() * 1000.0;
                 let image = match bitmap {
                     Ok(bitmap) => Some(
-                        cx.background_spawn(async move { bitmap_to_render_image(&bitmap) })
+                        cx.background_spawn(async move { bitmap_to_render_image(&bitmap, dark) })
                             .await,
                     ),
                     Err(err) => {
@@ -1095,7 +1128,7 @@ impl PdfPanel {
                 };
                 this.update(cx, |this, cx| {
                     this.inflight.remove(&(page, hi_milli));
-                    if let Some(image) = image {
+                    if let Some(image) = image.filter(|_| this.dark_pages == dark) {
                         this.images.insert((page, hi_milli), Arc::new(image));
                         this.last_render_ms = Some(elapsed_ms);
                         cx.notify();
@@ -1321,32 +1354,39 @@ impl PdfPanel {
         vec![
             Button::new("pdf-zoom-out")
                 .icon(IconName::Minus)
-                .tooltip("Alejar (Ctrl+rueda)")
+                .ghost()
+                .xsmall()
+                .tooltip(rust_i18n::t!("ui.app.text.alejar_ctrl_rueda").to_string())
                 .on_click(cx.listener(|this, _, _, cx| this.zoom_out(cx)))
                 .into_any_element(),
             Button::new("pdf-zoom-reset")
-                .outline()
+                .ghost()
+                .xsmall()
                 .label(format!("{:.0}%", zoom * 100.0))
                 .tooltip("100 %")
                 .on_click(cx.listener(|this, _, _, cx| this.zoom_reset(cx)))
                 .into_any_element(),
             Button::new("pdf-zoom-in")
                 .icon(IconName::Plus)
-                .tooltip("Acercar (Ctrl+rueda)")
+                .ghost()
+                .xsmall()
+                .tooltip(rust_i18n::t!("ui.app.text.acercar_ctrl_rueda").to_string())
                 .on_click(cx.listener(|this, _, _, cx| this.zoom_in(cx)))
                 .into_any_element(),
             Button::new("pdf-fit-width")
-                .outline()
-                .label("Ancho")
+                .ghost()
+                .xsmall()
+                .label(rust_i18n::t!("ui.app.text.ancho").to_string())
                 .toggled(mode == ZoomMode::FitWidth)
-                .tooltip("Ajustar al ancho")
+                .tooltip(rust_i18n::t!("ui.app.text.ajustar_al_ancho").to_string())
                 .on_click(cx.listener(|this, _, _, cx| this.set_zoom_mode(ZoomMode::FitWidth, cx)))
                 .into_any_element(),
             Button::new("pdf-fit-page")
-                .outline()
-                .label("Página")
+                .ghost()
+                .xsmall()
+                .label(rust_i18n::t!("ui.app.text.pagina").to_string())
                 .toggled(mode == ZoomMode::FitPage)
-                .tooltip("Ajustar a la página")
+                .tooltip(rust_i18n::t!("ui.app.text.ajustar_a_la_pagina").to_string())
                 .on_click(cx.listener(|this, _, _, cx| this.set_zoom_mode(ZoomMode::FitPage, cx)))
                 .into_any_element(),
         ]
@@ -1379,7 +1419,11 @@ impl PdfPanel {
             .w(px(page_w))
             .h(px(page_h))
             .shadow_lg()
-            .bg(white())
+            .bg(if self.dark_pages {
+                rgb(DARK_PAGE_BG).into()
+            } else {
+                white()
+            })
             .overflow_hidden();
         match image {
             Some(image) => {
@@ -1447,7 +1491,18 @@ impl PdfPanel {
     }
 
     /// Texto de la zona derecha de la toolbar (métricas + status).
+    /// Texto de estado de la toolbar.
+    ///
+    /// Por defecto solo muestra los avisos transitorios («PDF actualizado»…).
+    /// Las métricas internas (viewport, caché, tiempos de render) solo salen con
+    /// `LSX_PDF_DEBUG=1`: en 0.2 se colaban en la app publicada.
     fn format_status(&self) -> String {
+        if std::env::var_os("LSX_PDF_DEBUG").is_none() {
+            return match &self.status {
+                Some((status, until)) if *until > Instant::now() => status.clone(),
+                _ => String::new(),
+            };
+        }
         let mut parts: Vec<String> = Vec::new();
         if let Some((w, h)) = self.viewport {
             parts.push(format!("vp {w:.0}×{h:.0}"));
@@ -1496,11 +1551,80 @@ impl PdfPanel {
     }
 }
 
+/// Grupo de hover del visor (muestra la toolbar flotante).
+const PDF_GROUP: &str = "pdf-viewer";
+
+/// Menú contextual del visor.
+fn pdf_context_menu(
+    menu: gpui_kit::component::menu::PopupMenu,
+    weak: &WeakEntity<PdfPanel>,
+    dark: bool,
+) -> gpui_kit::component::menu::PopupMenu {
+    type Run = fn(&mut PdfPanel, &mut Context<PdfPanel>);
+    let entries: [(&str, IconName, Run); 5] = [
+        ("acercar", IconName::Plus, |this, cx| this.zoom_in(cx)),
+        ("alejar", IconName::Minus, |this, cx| this.zoom_out(cx)),
+        ("ajustar_al_ancho", IconName::ArrowRight, |this, cx| {
+            this.set_zoom_mode(ZoomMode::FitWidth, cx)
+        }),
+        ("pagina_completa", IconName::Maximize, |this, cx| {
+            this.set_zoom_mode(ZoomMode::FitPage, cx)
+        }),
+        ("pagina_oscura", IconName::Moon, |this, cx| {
+            this.toggle_dark_pages(cx)
+        }),
+    ];
+    let mut menu = menu;
+    for (ix, (label, icon, run)) in entries.into_iter().enumerate() {
+        if ix == 4 {
+            menu = menu.separator();
+        }
+        let weak = weak.clone();
+        menu = menu.item(
+            PopupMenuItem::new(rust_i18n::t!(format!("ui.app.text.{label}")).to_string())
+                .icon(icon)
+                .checked(ix == 4 && dark)
+                .on_click(move |_, _window, cx| {
+                    let _ = weak.update(cx, run);
+                }),
+        );
+    }
+    let weak = weak.clone();
+    menu.separator().item(
+        PopupMenuItem::new(rust_i18n::t!("ui.app.text.abrir_en_el_visor_externo").to_string())
+            .icon(IconName::ExternalLink)
+            .on_click(move |_, _window, cx| {
+                let _ = weak.update(cx, |this, cx| {
+                    this.open_external();
+                    cx.notify();
+                });
+            }),
+    )
+}
+
+/// Fondo de página en modo oscuro (el blanco del papel se convierte en esto).
+const DARK_PAGE_BG: u32 = 0x1F1F1F;
+
+/// Modo oscuro de un píxel RGB: invierte la luminosidad HSL conservando tono y
+/// saturación (el texto negro pasa a claro y los colores siguen reconocibles) y
+/// lleva el blanco del papel a [`DARK_PAGE_BG`] en vez de a negro puro.
+fn darken_pixel(rgb: [u8; 3]) -> [u8; 3] {
+    let max = rgb.iter().copied().max().unwrap_or(0) as i32;
+    let min = rgb.iter().copied().min().unwrap_or(0) as i32;
+    let floor = (DARK_PAGE_BG & 0xFF) as i32;
+    let ceil = 0xE6;
+    rgb.map(|channel| {
+        let inverted = (channel as i32 + 255 - max - min).clamp(0, 255);
+        (floor + inverted * (ceil - floor) / 255) as u8
+    })
+}
+
 /// `PageBitmap` (RGBA premultiplicado de hayro) → `RenderImage` (BGRA) de GPUI.
 ///
 /// Hallazgo M0-S3: el `RenderImage` de GPUI 0.3.9 en Windows espera **BGRA** y,
 /// como el render compone sobre blanco opaco (alpha 255), basta el swap R↔B.
-fn bitmap_to_render_image(bitmap: &PageBitmap) -> RenderImage {
+/// Con `dark`, cada píxel pasa por [`darken_pixel`].
+fn bitmap_to_render_image(bitmap: &PageBitmap, dark: bool) -> RenderImage {
     let mut data = bitmap.rgba.clone();
     for pixel in data.as_chunks_mut::<4>().0.iter_mut() {
         pixel.swap(0, 2);
@@ -1509,6 +1633,12 @@ fn bitmap_to_render_image(bitmap: &PageBitmap) -> RenderImage {
             for channel in &mut pixel[..3] {
                 *channel = (((*channel as u32) * 255 + alpha / 2) / alpha).min(255) as u8;
             }
+        }
+        if dark {
+            let [b, g, r] = darken_pixel([pixel[2], pixel[1], pixel[0]]);
+            pixel[0] = r;
+            pixel[1] = g;
+            pixel[2] = b;
         }
     }
     let buffer = RgbaImage::from_raw(bitmap.width, bitmap.height, data)
@@ -1638,7 +1768,7 @@ impl DockPanel for PdfPanel {
         Some(vec![
             Button::new("pdf-open-external")
                 .icon(IconName::ExternalLink)
-                .tooltip("Abrir en visor externo")
+                .tooltip(rust_i18n::t!("ui.app.text.abrir_en_visor_externo").to_string())
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.open_external();
                     cx.notify();
@@ -1696,11 +1826,11 @@ impl Render for PdfPanel {
 
         let content: AnyElement = if count == 0 {
             let message = if self.loading {
-                "Cargando PDF…"
+                rust_i18n::t!("ui.app.text.cargando_pdf").to_string()
             } else if self.error.is_some() {
-                "No se pudo abrir el PDF"
+                rust_i18n::t!("ui.app.text.no_se_pudo_abrir_el_pdf").to_string()
             } else {
-                "Sin documento PDF"
+                rust_i18n::t!("ui.app.text.sin_documento_pdf").to_string()
             };
             div()
                 .size_full()
@@ -1753,38 +1883,89 @@ impl Render for PdfPanel {
                 .into_any_element()
         };
 
-        let toolbar = self.show_toolbar.then(|| {
+        // Toolbar flotante (VS Code / visores modernos): aparece al pasar el
+        // ratón por el visor, centrada abajo, sin robar altura a las páginas.
+        let popover = cx.theme().popover;
+        let toolbar = (self.show_toolbar && count > 0).then(|| {
             let mut controls = self.zoom_controls(cx);
-            let page_label = format!("pág {} / {}", self.current_page.min(count.max(1)), count);
+            let page_label = format!("{} / {}", self.current_page.min(count.max(1)), count);
             let mut bar = h_flex()
-                .flex_shrink_0()
-                .h(px(40.0))
-                .px_3()
-                .gap_2()
-                .border_b_1()
+                .h(px(32.))
+                .px_2()
+                .gap_1()
+                .items_center()
+                .rounded(px(6.))
+                .max_w_full()
+                .overflow_hidden()
+                .border_1()
                 .border_color(border)
-                .child(div().text_sm().child(page_label));
+                .bg(popover)
+                .shadow_md()
+                .child(
+                    div()
+                        .text_size(px(crate::theme::tokens::TEXT_SM))
+                        .text_color(muted_foreground)
+                        .px_1()
+                        .child(page_label),
+                );
             for control in controls.drain(..) {
                 bar = bar.child(control);
             }
-            bar.child(div().flex_1()).child(
-                div()
-                    .text_xs()
-                    .text_color(muted_foreground)
-                    .child(self.format_status()),
-            )
+            bar = bar.child(
+                Button::new("pdf-dark-pages")
+                    .icon(IconName::Moon)
+                    .xsmall()
+                    .when(!self.dark_pages, |button| button.ghost())
+                    .tooltip(rust_i18n::t!("ui.app.text.pagina_oscura").to_string())
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_dark_pages(cx))),
+            );
+            // Los avisos («PDF actualizado») ya salen como flash; en la barra solo
+            // van las métricas de depuración.
+            let status = std::env::var_os("LSX_PDF_DEBUG")
+                .map(|_| self.format_status())
+                .unwrap_or_default();
+            if !status.is_empty() {
+                bar = bar.child(
+                    div()
+                        .text_xs()
+                        .text_color(muted_foreground)
+                        .px_1()
+                        .child(status),
+                );
+            }
+            div()
+                .absolute()
+                .bottom(px(14.))
+                .left_0()
+                .right_0()
+                .px_2()
+                .flex()
+                .justify_center()
+                .opacity(0.)
+                .group_hover(PDF_GROUP, |style| style.opacity(1.))
+                .child(bar)
         });
 
+        let dark = self.dark_pages;
+        let weak = cx.weak_entity();
+        let content = div()
+            .id("pdf-content")
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .child(content)
+            .context_menu(move |menu, _window, _cx| pdf_context_menu(menu, &weak, dark));
         let mut root = v_flex()
             .relative()
             .size_full()
+            .group(PDF_GROUP)
             .bg(background)
             .text_color(foreground)
-            .track_focus(&self.focus);
+            .track_focus(&self.focus)
+            .child(content);
         if let Some(toolbar) = toolbar {
             root = root.child(toolbar);
         }
-        let mut root = root.child(content);
 
         // Flash "PDF actualizado" (C3).
         if let Some(until) = self.updated_flash_until
@@ -1794,7 +1975,7 @@ impl Render for PdfPanel {
             root = root.child(
                 div()
                     .absolute()
-                    .top(px(52.0))
+                    .top(px(12.0))
                     .right(px(18.0))
                     .px_3()
                     .py_1()
@@ -1820,6 +2001,17 @@ mod tests {
         next_zoom_step, normalize_lexical, quantize_zoom, source_point_at,
     };
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn dark_pages_invert_lightness_and_keep_hue() {
+        use super::darken_pixel;
+        // Papel blanco → fondo oscuro del editor; tinta negra → texto claro.
+        assert_eq!(darken_pixel([255, 255, 255]), [0x1F, 0x1F, 0x1F]);
+        assert_eq!(darken_pixel([0, 0, 0]), [0xE6, 0xE6, 0xE6]);
+        // Un rojo puro sigue siendo rojo (el canal dominante sigue siéndolo).
+        let [r, g, b] = darken_pixel([200, 0, 0]);
+        assert!(r > g && r > b);
+    }
 
     #[test]
     fn source_point_at_top_mapea_scroll_a_pagina_y_bp() {

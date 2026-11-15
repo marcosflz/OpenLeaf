@@ -2,10 +2,10 @@ name: installer
 
 # Construye el instalador de Windows (M3-1/M3-2) en CI.
 #
-# Por qué en CI: los activos pesados del producto (agent\opencode.exe, tex\) NO
-# están en git, así que el runner los prepara:
-#   - opencode portable: se descarga del release oficial en la versión fijada
-#     (abajo, OPENCODE_VERSION) → agent\opencode.exe
+# Por qué en CI: los activos pesados del producto (agent\, tex\) NO están en
+# git, así que el runner los prepara:
+#   - agente LaTeX: scripts/get-agent.ps1 monta Python embebido + nas-adk
+#     (versiones y SHA256 fijados en el script) + python\lsx_agent
 #   - TeX Live: NO se incluye en el payload (instalador ligero). El propio Setup
 #     descarga TinyTeX-1 y ejecuta tlmgr si el usuario no tiene un tex\ existente;
 #     el perfil /DBundledTex (offline) se monta en local con `xtask dist`.
@@ -13,17 +13,11 @@ name: installer
 # Se dispara a mano (workflow_dispatch) o al empujar un tag `v*`.
 on:
   workflow_dispatch:
-    inputs:
-      opencode_version:
-        description: "Versión portable de opencode (p. ej. v1.18.30)"
-        required: false
-        default: "v1.18.30"
   push:
     tags: ["v*"]
 
 env:
   CARGO_TERM_COLOR: always
-  OPENCODE_VERSION: ${{ github.event.inputs.opencode_version || 'v1.18.30' }}
 
 jobs:
   windows-installer:
@@ -35,23 +29,19 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       # --- Agente portable (fuera de git) ----------------------------------
-      - name: Descargar opencode portable
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Tests del agente (sin red ni tokens)
         shell: pwsh
+        working-directory: python
         run: |
-          $ErrorActionPreference = 'Stop'
-          $zip = Join-Path $env:RUNNER_TEMP 'opencode.zip'
-          $url = "https://github.com/sst/opencode/releases/download/$env:OPENCODE_VERSION/opencode-windows-x64.zip"
-          Write-Host "descargando $url"
-          curl.exe -L --fail --retry 3 -o $zip $url
-          $dest = Join-Path $env:GITHUB_WORKSPACE 'agent'
-          New-Item -ItemType Directory -Force $dest | Out-Null
-          Expand-Archive -Path $zip -DestinationPath $dest -Force
-          $exe = Get-ChildItem -Path $dest -Recurse -Filter 'opencode.exe' | Select-Object -First 1
-          if (-not $exe) { throw "el zip de opencode no trae opencode.exe" }
-          if ($exe.DirectoryName -ne $dest) {
-            Copy-Item $exe.FullName (Join-Path $dest 'opencode.exe') -Force
-          }
-          & (Join-Path $dest 'opencode.exe') --version
+          uv sync
+          uv run ruff check lsx_agent tests
+          uv run pytest -q
+
+      - name: Montar el agente portable
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/get-agent.ps1
 
       # --- Aplicación -------------------------------------------------------
       - name: Compilar la app (release)

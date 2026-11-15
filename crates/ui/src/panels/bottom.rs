@@ -57,14 +57,6 @@ impl BottomTab {
             Self::Symbols => "symbols",
         }
     }
-
-    fn icon(self) -> IconName {
-        match self {
-            Self::Problems => IconName::TriangleAlert,
-            Self::Output => IconName::Terminal,
-            Self::Symbols => IconName::Sigma,
-        }
-    }
 }
 
 /// Dock inferior del explorador.
@@ -161,8 +153,8 @@ impl BottomPanel {
             .min_h(px(26.))
             .flex_none()
             .items_center()
-            .gap(px(2.))
-            .px(px(4.))
+            .gap(px(0.))
+            .px(px(2.))
             .py(px(2.))
             .border_b_1()
             .border_color(cx.theme().border)
@@ -188,46 +180,49 @@ impl BottomPanel {
                         h_flex()
                             .id(SharedString::from(format!("bottom-tab-{}", tab.id())))
                             .flex_none()
-                            .max_w(px(124.))
                             .min_w_0()
-                            .gap(px(3.))
+                            .h(px(24.))
+                            .gap(px(4.))
                             .items_center()
                             .px(px(4.))
-                            .py(px(3.))
-                            .rounded(px(3.))
                             .cursor_pointer()
-                            .when(selected, |this| {
-                                this.bg(cx.theme().foreground.opacity(0.08))
-                            })
-                            .hover(|style| style.bg(cx.theme().foreground.opacity(0.06)))
-                            .child(Icon::new(tab.icon()).size(px(11.)).text_color(if selected {
-                                cx.theme().foreground
+                            // VS Code: solo texto; la activa se subraya con el acento.
+                            .border_b_1()
+                            .border_color(if selected {
+                                cx.theme().accent
                             } else {
-                                cx.theme().muted_foreground
-                            }))
+                                gpui_kit::transparent_black()
+                            })
+                            .tooltip(move |window, cx| {
+                                gpui_kit::component::tooltip::Tooltip::new(tab.label())
+                                    .build(window, cx)
+                            })
                             .child(
                                 div()
                                     .min_w_0()
                                     .overflow_hidden()
                                     .text_ellipsis()
-                                    .text_size(px(11.))
-                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_size(px(crate::theme::tokens::TEXT_XS))
                                     .text_color(if selected {
                                         cx.theme().foreground
                                     } else {
                                         cx.theme().muted_foreground
                                     })
+                                    .hover(|style| style.text_color(cx.theme().foreground))
                                     .child(tab.label()),
                             )
                             .when_some(counter, |this, (errors, warnings, has_errors)| {
                                 this.child(
                                     div()
+                                        .px(px(5.))
+                                        .rounded_full()
                                         .text_size(px(10.))
-                                        .text_color(if has_errors {
-                                            cx.theme().danger
+                                        .bg(if has_errors {
+                                            cx.theme().danger.opacity(0.85)
                                         } else {
-                                            cx.theme().warning
+                                            cx.theme().warning.opacity(0.85)
                                         })
+                                        .text_color(gpui_kit::white())
                                         .child(if errors > 0 {
                                             format!("{errors}")
                                         } else {
@@ -252,7 +247,7 @@ impl BottomPanel {
                         .ghost()
                         .compact()
                         .icon(IconName::Trash)
-                        .tooltip("Vaciar SALIDA")
+                        .tooltip(rust_i18n::t!("ui.app.text.vaciar_salida").to_string())
                         .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
                             this.clear_output(cx);
                         })),
@@ -269,9 +264,9 @@ impl BottomPanel {
                         IconName::ChevronUp
                     })
                     .tooltip(if self.open {
-                        "Colapsar la ventana inferior"
+                        rust_i18n::t!("ui.app.text.colapsar_la_ventana_inferior").to_string()
                     } else {
-                        "Desplegar la ventana inferior"
+                        rust_i18n::t!("ui.app.text.desplegar_la_ventana_inferior").to_string()
                     })
                     .on_click(cx.listener(|this, _: &ClickEvent, _window, cx| {
                         this.toggle_open(cx);
@@ -292,9 +287,10 @@ impl BottomPanel {
             .font_family(mono)
             .text_size(px(11.))
             .text_color(cx.theme().muted_foreground)
-            .children(lines.into_iter().map(|line| {
+            .children(lines.into_iter().enumerate().map(|(ix, line)| {
+                // Id por posición: dos líneas iguales no pueden compartir id.
                 div()
-                    .id(SharedString::from(format!("output-{line}")))
+                    .id(("output-line", ix))
                     .whitespace_nowrap()
                     .child(line.clone())
             }))

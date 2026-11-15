@@ -1,7 +1,7 @@
 ; Instalador de LaTeX Studio (Inno Setup 6.3+).
 ;
 ; Empaqueta la distribución ya montada por `cargo xtask dist` (carpeta
-; `dist\latex-ide`): aplicación + agente opencode + skills. NO incluye tus
+; `dist\latex-ide`): aplicación + agente LaTeX (Python embebido) + skills. NO incluye tus
 ; documentos (workspace\) ni la configuración del usuario (config\).
 ;
 ; Dos sabores:
@@ -110,7 +110,7 @@ Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Description: "Iniciar {#
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\logs"
-Type: filesandordirs; Name: "{app}\config\opencode.runtime.json"
+Type: filesandordirs; Name: "{app}\agent\lsx_agent\__pycache__"
 ; Nunca se borran los proyectos del usuario ({app}\workspace) ni sus ajustes.
 ; El TinyTeX descargado en el perfil ligero tampoco se borra: puede contener
 ; paquetes que el usuario haya añadido. Solo el perfil /DBundledTex borra tex\.

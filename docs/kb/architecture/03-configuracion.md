@@ -63,7 +63,7 @@ un `Dialog` de 880 px con navegación lateral:
   `PdfPanel`; la caché se aplica al reiniciar y el doble clic aún no está conectado (la
   UI lo advierte).
 - **IA:** estado del ejecutable y comandos de opencode (ver
-  [`04-chat-opencode`](04-chat-opencode.md)), `autoStart`, `port` opcional
+  [`04-chat-agente`](04-chat-agente.md)), `autoStart`, `port` opcional
   (1024-65535), modelo, agente, preset de permisos (`ask`/`project`/`all`) y `showReasoning`.
   Los cambios se aplican al reiniciar el chat.
 - **Avanzado:** nivel de log, ruta de `settings.json`, “Abrir carpeta de configuración”,
