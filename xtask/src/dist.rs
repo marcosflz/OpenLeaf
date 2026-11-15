@@ -468,6 +468,8 @@ fn copy_dir(from: &Path, to: &Path) {
     if !from.is_dir() {
         return;
     }
+    // La raíz del árbol no la crea nadie más: sin esto, cada fichero falla.
+    create_dir(to);
     let entries = match fs::read_dir(from) {
         Ok(entries) => entries,
         Err(error) => fail(&format!("no se pudo leer {}: {error}", from.display())),
