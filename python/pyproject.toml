@@ -1,10 +1,10 @@
 [project]
 name = "lsx-agent"
-version = "0.3.0"
+version = "0.3.1"
 description = "Agente LaTeX de LaTeX Studio (sidecar NDJSON sobre nas-adk)"
 requires-python = ">=3.12"
 dependencies = [
-  "nas-adk @ https://github.com/marcosflz/nas-adk/releases/download/v0.3.0/nas_adk-0.3.0-py3-none-any.whl",
+  "nas-adk @ https://github.com/marcosflz/nas-adk/releases/download/v0.5.0/nas_adk-0.5.0-py3-none-any.whl",
 ]
 
 [project.optional-dependencies]

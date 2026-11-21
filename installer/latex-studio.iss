@@ -29,7 +29,7 @@
 
 #define MyAppName "LaTeX Studio"
 #ifndef MyAppVersion
-  #define MyAppVersion "0.3.0"
+  #define MyAppVersion "0.3.1"
 #endif
 #define MyAppPublisher "LaTeX Studio"
 #define MyAppExeName "latex-studio.exe"
@@ -76,8 +76,12 @@ SetupLogging=yes
 SetupIconFile=latex-studio.ico
 UninstallDisplayName={#MyAppName}
 UninstallDisplayIcon={app}\latex-studio.ico
-; La app escribe en su propia carpeta: no cerrar nada del usuario al desinstalar.
-CloseApplications=no
+; Actualizar sobre una instalación previa: si LaTeX Studio está abierto, el
+; instalador lo cierra (Administrador de reinicio de Windows) para reemplazar
+; latex-studio.exe (y el agente que cuelga de él). Antes era "no", y con la app
+; abierta la actualización se quedaba bloqueada por archivos en uso.
+CloseApplications=yes
+RestartApplications=no
 
 [Languages]
 Name: "spanish"; MessagesFile: "compiler:Languages\Spanish.isl"

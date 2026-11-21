@@ -5,7 +5,8 @@ Hay dos familias, como en Ajustes:
 - ``api``: servicios que se pagan por uso con una clave (OpenRouter, OpenAI, Anthropic,
   Gemini, DeepSeek) o un servidor local OpenAI-compatible (LM Studio).
 - ``subscription``: planes personales (OpenCode Go con su clave, Claude a través del CLI
-  ``claude`` autenticado por la persona).
+  ``claude`` autenticado por la persona y ChatGPT con «Sign in with ChatGPT», ver
+  ``chatgpt.py``).
 
 Varios pueden estar activos a la vez. Cada uno guarda en ``config/secrets/ai.json``::
 
@@ -37,6 +38,7 @@ from pathlib import Path
 from typing import Any
 
 from nas.adk.models import ModelRouter
+from nas.adk.models.base_llm import BaseLlm
 
 #: Presupuesto de la consulta del catálogo de un proveedor (s).
 LIST_TIMEOUT = 12.0
@@ -55,7 +57,7 @@ class ProviderSpec:
     #: Modelos sugeridos ``(id, nombre)``: los activos hasta que la persona elija.
     models: tuple[tuple[str, str], ...]
     help: str
-    #: ``key`` (clave de API) o ``cli`` (sesión del CLI ``claude``).
+    #: ``key`` (clave de API), ``cli`` (sesión del CLI ``claude``) o ``chatgpt`` (OAuth).
     link: str = "key"
     #: La clave es obligatoria.
     needs_key: bool = True
@@ -167,6 +169,7 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
             ("default", "Modelo por defecto del CLI"),
             ("sonnet", "Sonnet"),
             ("opus", "Opus"),
+            ("fable", "Fable"),
             ("haiku", "Haiku"),
         ),
         help=(
@@ -176,8 +179,23 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         link="cli",
         needs_key=False,
     ),
+    ProviderSpec(
+        id="chatgpt",
+        name="ChatGPT",
+        kind="subscription",
+        backend="chatgpt",
+        env_key="",
+        # Sin sugeridos: al vincular se activan los modelos que ofrece el plan.
+        models=(),
+        help="Tu plan de ChatGPT (Plus, Pro…), con «Sign in with ChatGPT». Uso personal.",
+        link="chatgpt",
+        needs_key=False,
+    ),
 )
 BY_ID = {spec.id: spec for spec in PROVIDERS}
+
+#: Presupuesto para que el CLI `claude` anuncie sus modelos (no hace inferencia).
+CLAUDE_LIST_TIMEOUT = 60.0
 
 
 class Secrets:
@@ -198,6 +216,17 @@ class Secrets:
     def entry(self, provider: str) -> dict[str, Any] | None:
         entry = self.load().get(provider)
         return entry if isinstance(entry, dict) else None
+
+    def save_entry(self, provider: str, entry: dict[str, Any]) -> None:
+        """Sustituye la entrada de un proveedor con escritura atómica (temporal + rename)."""
+        if self.path is None:
+            raise ValueError("no hay archivo de credenciales (--secrets)")
+        data = self.load()
+        data[provider] = entry
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.path.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        os.replace(temporary, self.path)
 
     def api_key(self, provider: str) -> str:
         entry = self.entry(provider) or {}
@@ -249,6 +278,10 @@ def has_credential(spec: ProviderSpec, secrets: Secrets) -> bool:
     """Hay con qué conectarse: clave, CLI vinculado o (sin clave) el proveedor añadido."""
     if spec.link == "cli":
         return claude_cli() is not None
+    if spec.link == "chatgpt":
+        from . import chatgpt
+
+        return chatgpt.has_account(secrets)
     if not spec.needs_key:
         return secrets.entry(spec.id) is not None or bool(secrets.api_key(spec.id))
     return bool(secrets.api_key(spec.id))
@@ -293,7 +326,30 @@ def status(secrets: Secrets) -> list[dict[str, Any]]:
 
 
 def can_list(spec: ProviderSpec) -> bool:
-    return spec.link == "cli" or bool(spec.models_url) or spec.custom_base_url
+    return spec.link in ("cli", "chatgpt") or bool(spec.models_url) or spec.custom_base_url
+
+
+def claude_models() -> list[dict[str, str]]:
+    """Modelos que anuncia el CLI `claude` con la sesión de la persona.
+
+    Usa ``ClaudeCodeLlm.list_models`` de nas-adk (protocolo de control del CLI, sin
+    inferencia ni cuota): alias (``default``, ``opus``, ``sonnet``…) y versiones concretas
+    de la cuenta. Con un token de ``setup-token`` añade las versiones conocidas del CLI.
+    """
+    import asyncio
+
+    from nas.adk.models.claude_code.llm import ClaudeCodeLlm
+
+    async def fetch() -> list[dict[str, str]]:
+        llm = ClaudeCodeLlm(env_policy="scrub")
+        models = await llm.list_models(timeout=CLAUDE_LIST_TIMEOUT)
+        return [{"id": m.id, "name": m.label or m.id} for m in models if m.id]
+
+    models = asyncio.run(fetch())
+    # `default` (lo que elija el CLI) siempre disponible y primero.
+    if not any(m["id"] == "default" for m in models):
+        models.insert(0, {"id": "default", "name": "Modelo por defecto del CLI"})
+    return models
 
 
 def extract_models(payload: Any) -> list[dict[str, str]]:
@@ -345,8 +401,26 @@ def list_models(provider: str, secrets: Secrets, api_key: str = "") -> dict[str,
     if spec is None:
         return {"ok": False, "error": f"proveedor no soportado: {provider}"}
     if spec.link == "cli":
-        # Los alias los resuelve el CLI; no hay endpoint que consultar.
-        return {"ok": True, "models": [{"id": m, "name": n} for m, n in spec.models]}
+        if claude_cli() is None:
+            return {"ok": False, "error": "No se encontró el CLI `claude`: instálalo y vuelve"}
+        try:
+            return {"ok": True, "models": claude_models()}
+        except Exception as error:  # noqa: BLE001 — se informa a la UI y se ofrecen los alias
+            return {
+                "ok": True,
+                "models": [{"id": m, "name": n} for m, n in spec.models],
+                "warning": f"El CLI no listó sus modelos ({type(error).__name__}); "
+                "se muestran los alias.",
+            }
+    if spec.link == "chatgpt":
+        import asyncio
+
+        from . import chatgpt
+
+        try:
+            return {"ok": True, "models": asyncio.run(chatgpt.list_models(secrets))}
+        except chatgpt.ChatGptError as error:
+            return {"ok": False, "error": str(error)}
     url = spec.models_url
     if spec.custom_base_url:
         url = f"{secrets.base_url(spec)}/models"
@@ -381,7 +455,7 @@ def list_models(provider: str, secrets: Secrets, api_key: str = "") -> dict[str,
     return {"ok": True, "models": models}
 
 
-def build_model(provider: str, model: str, secrets: Secrets) -> ModelRouter:
+def build_model(provider: str, model: str, secrets: Secrets) -> BaseLlm:
     spec = BY_ID.get(provider)
     if spec is None:
         raise ValueError(f"proveedor no soportado: {provider}")
@@ -394,6 +468,10 @@ def build_model(provider: str, model: str, secrets: Secrets) -> ModelRouter:
         # Las variables que facturarían por API se quitan solo del proceso hijo.
         os.environ.setdefault("CLAUDE_CODE_ENV_POLICY", "scrub")
         return ModelRouter(provider="claude-code", model="" if model == "default" else model)
+    if spec.backend == "chatgpt":
+        from . import chatgpt
+
+        return chatgpt.build(model, secrets)
     kwargs: dict[str, Any] = {
         "provider": spec.backend,
         "model": model,

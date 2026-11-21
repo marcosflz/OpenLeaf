@@ -17,6 +17,65 @@ verified: true
 > Formato: `CHG-NNNN`. Estado: `planned` · `doing` · `done` · `reverted`.
 > El estado vivo de las tareas está en `PLAN-0.2.md`; aquí queda la historia.
 
+## CHG-0020 — Instalador: actualizar sobre la versión instalada y release 0.3.1
+
+- **Fecha:** 2026-11-21
+- **Tarea:** release 0.3.1 (instalador)
+- **Estado:** done
+- **Territorio:** `installer/latex-studio.iss`, `docs/release-notes.md`, `docs/kb/changes/CHANGELOG.md`.
+- **Qué cambia:**
+  - **Actualizar sin desinstalar**: el `AppId` es fijo desde el primer instalador, así que Inno
+    reconoce la instalación previa y reutiliza su carpeta. Pero con `CloseApplications=no`, si la
+    app estaba abierta, no podía reemplazar `latex-studio.exe`. Ahora es `CloseApplications=yes`
+    (Administrador de reinicio de Windows) con `RestartApplications=no`.
+  - Se mantiene el `AppId` (`{8C1D9D2E-…}`): cambiarlo rompería la actualización de 0.1.0/0.2.0/0.3.0.
+- **Evidencia:**
+  - `ISCC` compila `installer\latex-studio.iss` (0.3.1) sin errores; `xtask dist` y `kb check` en verde.
+  - **No verificado**: la actualización de extremo a extremo en Windows (cierre de la app abierta y
+    reemplazo del exe). Un intento de prueba aislada con otro `AppId` no llegó a ejecutarse por un
+    fallo del arnés de prueba, no del instalador.
+
+## CHG-0019 — Botones de la barra superior y del chat, modelos de Claude y suscripción de ChatGPT
+
+- **Fecha:** 2026-11-15
+- **Tarea:** P3-AI-3 / P3-UI-4
+- **Estado:** done
+- **Territorio:**
+  - `crates/ui/src/{app,ai_setup,settings_providers}.rs`, `crates/ui/src/panels/chat.rs`,
+    `crates/ui/locales/es.yml`;
+  - `python/lsx_agent/{__init__,__main__,providers,chatgpt}.py`, `python/tests/*`,
+    `python/pyproject.toml`, `python/uv.lock`;
+  - `scripts/get-agent.ps1`, `docs/release.md`, `docs/release-notes.md`.
+- **Qué cambia:**
+  - **Bug (0.3.0)**: el engranaje, los toggles de paneles y la barra de menús no respondían en
+    Windows. La barra del `TitleBar` es zona `Drag` y GPUI respondía `HTCAPTION` con un botón
+    encima, así que el clic se convertía en «mover ventana». Cada grupo interactivo lleva
+    ahora `.occlude()`.
+  - **Bug (0.3.0)**: los menús de la cabecera del chat (modo, permisos, modelo, sesiones) se
+    anclaban con `BottomRight` (abren hacia arriba, sobre la toolbar). Pasan a `TopRight`.
+  - **nas-adk 0.3.0 → 0.5.0**. Shim de Windows para su `import fcntl/termios` (ver
+    `kb/architecture/chat-agente`).
+  - **Claude**: «Elegir modelos» lista lo que anuncia el CLI con la sesión de la persona
+    (alias y versiones; 14 modelos en el equipo de prueba). Si falla, se usan los alias. Se
+    añade `fable` a los sugeridos.
+  - **ChatGPT**: nueva suscripción con «Sign in with ChatGPT» (OAuth con PKCE de nas-adk,
+    redirección capturada en `127.0.0.1:1455`), renovación del token con rotación,
+    desvincular y modelos del plan.
+- **Corrección de CHG-0018**: allí se dijo que ChatGPT quedaba fuera porque nas-adk no lo
+  soportaba. Era incorrecto: nexus lo implementa, y nas-adk lo trae desde 0.4.0.
+- **Evidencia:**
+  - Gates: `fmt`, `clippy -D warnings`, `cargo test --workspace` (345), `kb check`; agente:
+    `pytest` (47) y `ruff`.
+  - Tests nuevos: shell real con `TestAppContext` (engranaje abre Ajustes, toggle oculta el
+    PDF, los cuatro menús del chat reciben el foco), ChatGPT (vinculación con redirección,
+    refresco con rotación, refresco rechazado, desvincular, catálogo del plan), fallback de
+    Claude y estado de ChatGPT en Rust.
+  - Listado real de Claude contra el CLI instalado (`--list-models claude-code`).
+  - Límite: la prueba de impacto de Windows (`HTCAPTION`) no se puede simular en tests ni
+    con clics inyectados (bloqueados en esta sesión). El arreglo se apoya en el código de
+    GPUI (`handle_hit_test_msg` + `HitboxBehavior::BlockMouse`). Revisión manual pendiente.
+  - Inicio de sesión real de ChatGPT pendiente de una cuenta: probado con OpenAI simulado.
+
 ## CHG-0018 — Gestión de proveedores y modelos como en nexus: Claves de API y Suscripciones
 
 - **Fecha:** 2026-11-15

@@ -137,6 +137,8 @@ pub struct ProviderList {
     default_model: Option<String>,
     chooser: Option<Chooser>,
     confirm_remove: Option<&'static str>,
+    /// Inicio de sesión de ChatGPT en curso (espera al navegador).
+    linking: bool,
     info: Option<String>,
     error: Option<String>,
 }
@@ -195,6 +197,7 @@ impl ProviderList {
             default_model,
             chooser: None,
             confirm_remove: None,
+            linking: false,
             info: None,
             error: None,
         }
@@ -448,6 +451,67 @@ impl ProviderList {
         self.report(Ok(rust_i18n::t!(key).to_string()), cx);
     }
 
+    /// «Iniciar sesión con ChatGPT»: el agente abre el navegador y espera la vuelta (hasta
+    /// 5 min) en segundo plano; la tarjeta muestra el progreso.
+    fn link_chatgpt(&mut self, cx: &mut Context<Self>) {
+        let Some(setup) = self.setup.clone() else {
+            return;
+        };
+        if self.linking {
+            return;
+        }
+        self.linking = true;
+        self.report(
+            Ok(rust_i18n::t!("ui.app.settings.providers.chatgpt_waiting").to_string()),
+            cx,
+        );
+        let task = cx.background_spawn(async move { setup.login_chatgpt() });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                this.linking = false;
+                this.changed(cx);
+                let message = match result {
+                    Ok(account) => Ok(rust_i18n::t!(
+                        "ui.app.settings.providers.chatgpt_linked",
+                        account = account.unwrap_or_else(|| "ChatGPT".to_owned())
+                    )
+                    .to_string()),
+                    Err(error) => Err(rust_i18n::t!(
+                        "ui.app.settings.providers.error",
+                        error = error
+                    )
+                    .to_string()),
+                };
+                this.report(message, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn unlink_chatgpt(&mut self, cx: &mut Context<Self>) {
+        let Some(setup) = self.setup.clone() else {
+            return;
+        };
+        self.chooser = None;
+        let task = cx.background_spawn(async move { setup.logout_chatgpt() });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                this.changed(cx);
+                let message = result
+                    .map(|()| {
+                        rust_i18n::t!("ui.app.settings.providers.chatgpt_unlinked").to_string()
+                    })
+                    .map_err(|error| {
+                        rust_i18n::t!("ui.app.settings.providers.error", error = error).to_string()
+                    });
+                this.report(message, cx);
+            });
+        })
+        .detach();
+    }
+
     // --- selector de modelos ------------------------------------------------------------
 
     fn open_chooser(&mut self, id: &'static str, window: &mut Window, cx: &mut Context<Self>) {
@@ -595,8 +659,8 @@ impl ProviderList {
         let spec = status.spec;
         let id = spec.id;
         let theme = cx.theme();
-        let cli_missing = spec.link == LinkFlow::Cli && !status.has_credential;
-        let (label, color) = if cli_missing {
+        let unlinked = spec.link != LinkFlow::Key && !status.has_credential;
+        let (label, color) = if unlinked {
             (
                 rust_i18n::t!("ui.app.settings.providers.state_unlinked"),
                 theme.muted_foreground,
@@ -662,6 +726,7 @@ impl ProviderList {
 
         let credentials = match spec.link {
             LinkFlow::Cli => self.render_cli(status, cx),
+            LinkFlow::ChatGpt => self.render_chatgpt(status, cx),
             LinkFlow::Key => self.render_key(status, cx),
         };
 
@@ -752,6 +817,59 @@ impl ProviderList {
             .children(models)
             .children(chooser)
             .children(footer)
+            .into_any_element()
+    }
+
+    fn render_chatgpt(&self, status: &ProviderStatus, cx: &mut Context<Self>) -> AnyElement {
+        let muted = cx.theme().muted_foreground;
+        let detail = match &status.source {
+            CredentialSource::Account(Some(account)) => rust_i18n::t!(
+                "ui.app.settings.providers.chatgpt_account",
+                account = account.as_str()
+            )
+            .to_string(),
+            CredentialSource::Account(None) => {
+                rust_i18n::t!("ui.app.settings.providers.chatgpt_account_unknown").to_string()
+            }
+            _ => rust_i18n::t!("ui.app.settings.providers.chatgpt_hint").to_string(),
+        };
+        let linked = status.has_credential;
+        v_flex()
+            .gap_2()
+            .child(div().text_xs().text_color(muted).child(detail))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(
+                        Button::new("provider-chatgpt-login")
+                            .small()
+                            .when(linked, |button| button.outline())
+                            .when(!linked, |button| button.primary())
+                            .icon(IconName::ExternalLink)
+                            .label(if linked {
+                                rust_i18n::t!("ui.app.settings.providers.chatgpt_relink")
+                                    .to_string()
+                            } else {
+                                rust_i18n::t!("ui.app.settings.providers.chatgpt_login").to_string()
+                            })
+                            .loading(self.linking)
+                            .disabled(self.linking)
+                            .on_click(cx.listener(|this, _, _, cx| this.link_chatgpt(cx))),
+                    )
+                    .when(linked, |row| {
+                        row.child(
+                            Button::new("provider-chatgpt-logout")
+                                .small()
+                                .ghost()
+                                .label(
+                                    rust_i18n::t!("ui.app.settings.providers.chatgpt_logout")
+                                        .to_string(),
+                                )
+                                .disabled(self.linking)
+                                .on_click(cx.listener(|this, _, _, cx| this.unlink_chatgpt(cx))),
+                        )
+                    }),
+            )
             .into_any_element()
     }
 

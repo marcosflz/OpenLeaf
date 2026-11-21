@@ -2188,6 +2188,12 @@ impl AppRoot {
                 cx.listener(|this, _, window, cx| this.open_settings(window, cx)),
             ));
 
+        // La barra del `TitleBar` es una zona `WindowControlArea::Drag`. En
+        // Windows, la prueba de impacto devuelve `HTCAPTION` si esa zona está
+        // bajo el cursor aunque haya un botón encima: el clic se convierte en
+        // «mover ventana» y el botón nunca recibe el `click` (0.3.0: engranaje,
+        // toggles y menús muertos). Cada grupo interactivo tapa la zona con
+        // `occlude()`; los huecos entre grupos siguen arrastrando la ventana.
         TitleBar::new().child(
             h_flex()
                 .flex_1()
@@ -2196,15 +2202,15 @@ impl AppRoot {
                 .items_center()
                 .gap_2()
                 .pr_2()
-                .child(div().flex_none().child(self.menu_bar.clone()))
+                .child(div().flex_none().occlude().child(self.menu_bar.clone()))
                 .child(
                     h_flex()
                         .flex_1()
                         .min_w_0()
                         .justify_center()
-                        .child(project_menu),
+                        .child(div().min_w_0().occlude().child(project_menu)),
                 )
-                .child(actions),
+                .child(actions.occlude()),
         )
     }
 }
@@ -2930,6 +2936,82 @@ impl Render for AppRoot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui_kit::test::TestWindowExt as _;
+
+    /// Shell real (dock, toolbar, chat) en una ventana de test, con una raíz
+    /// portable temporal y el asistente sin arrancar.
+    fn with_shell<R>(
+        name: &str,
+        f: impl FnOnce(&mut gpui_kit::VisualTestContext, Entity<AppRoot>) -> R,
+    ) -> R {
+        let dir = std::env::temp_dir().join(format!("lsx-ui-shell-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("config")).expect("config temporal");
+        let portable = PortableRoot::from_dir(dir.clone());
+        let mut settings = Settings::default();
+        settings.ai.auto_start = false;
+
+        let mut app = gpui_kit::TestAppContext::single();
+        app.update(|cx| {
+            gpui_kit::init(cx);
+            crate::init(cx);
+        });
+        let mut root = None;
+        let (_, cx) = app.add_window_view(|window, cx| {
+            let view = cx.new(|cx| AppRoot::new(portable, settings, Vec::new(), window, cx));
+            root = Some(view.clone());
+            gpui_kit::base::Root::new(view, window, cx)
+        });
+        cx.update(|window, cx| window.render_frame(cx));
+        let result = f(cx, root.expect("AppRoot"));
+        let _ = std::fs::remove_dir_all(dir);
+        result
+    }
+
+    /// Regresión (0.3.0): el engranaje abre Ajustes y un toggle oculta su panel.
+    #[test]
+    fn los_botones_de_la_toolbar_responden() {
+        with_shell("toolbar", |cx, _root| {
+            cx.update(|window, cx| window.click("toolbar-settings", cx));
+            cx.update(|window, cx| window.render_frame(cx));
+            assert!(
+                cx.update(|window, cx| window.has_active_dialog(cx)),
+                "el engranaje no abrió Ajustes"
+            );
+        });
+        with_shell("toggle", |cx, root| {
+            assert!(!cx.read(|cx| root.read(cx).layout.is_collapsed(SlotKind::Pdf)));
+            cx.update(|window, cx| window.click("toolbar-slot-pdf", cx));
+            assert!(
+                cx.read(|cx| root.read(cx).layout.is_collapsed(SlotKind::Pdf)),
+                "el toggle del PDF no ocultó el panel"
+            );
+        });
+    }
+
+    /// Regresión (0.3.0): los menús de la cabecera del chat se abren dentro del
+    /// dock real (el foco pasa al menú y no vuelve a la hoja).
+    #[test]
+    fn los_menus_del_chat_se_abren_en_el_shell_real() {
+        for id in [
+            "chat-agent",
+            "chat-permissions",
+            "chat-model",
+            "chat-sessions",
+        ] {
+            with_shell(id, |cx, _root| {
+                let before = cx.update(|window, cx| window.focused(cx));
+                cx.update(|window, cx| window.click(id, cx));
+                cx.update(|window, cx| window.render_frame(cx));
+                let after = cx.update(|window, cx| window.focused(cx));
+                assert!(
+                    after.is_some(),
+                    "{id}: el clic no dejó el foco en ningún sitio"
+                );
+                assert_ne!(after, before, "{id}: el clic no abrió el menú");
+            });
+        }
+    }
 
     fn collapsed(layout: &ShellLayout) -> Vec<SlotKind> {
         SlotKind::ALL

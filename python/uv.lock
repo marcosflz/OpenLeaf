@@ -472,7 +472,7 @@ wheels = [
 
 [[package]]
 name = "lsx-agent"
-version = "0.3.0"
+version = "0.3.1"
 source = { virtual = "." }
 dependencies = [
     { name = "nas-adk" },
@@ -493,7 +493,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "anthropic", marker = "extra == 'anthropic'", specifier = ">=2,<3" },
-    { name = "nas-adk", url = "https://github.com/marcosflz/nas-adk/releases/download/v0.3.0/nas_adk-0.3.0-py3-none-any.whl" },
+    { name = "nas-adk", url = "https://github.com/marcosflz/nas-adk/releases/download/v0.5.0/nas_adk-0.5.0-py3-none-any.whl" },
 ]
 provides-extras = ["anthropic"]
 
@@ -552,8 +552,8 @@ wheels = [
 
 [[package]]
 name = "nas-adk"
-version = "0.3.0"
-source = { url = "https://github.com/marcosflz/nas-adk/releases/download/v0.3.0/nas_adk-0.3.0-py3-none-any.whl" }
+version = "0.5.0"
+source = { url = "https://github.com/marcosflz/nas-adk/releases/download/v0.5.0/nas_adk-0.5.0-py3-none-any.whl" }
 dependencies = [
     { name = "click" },
     { name = "httpx" },
@@ -566,7 +566,7 @@ dependencies = [
     { name = "typing-extensions" },
 ]
 wheels = [
-    { url = "https://github.com/marcosflz/nas-adk/releases/download/v0.3.0/nas_adk-0.3.0-py3-none-any.whl", hash = "sha256:2bfc049455af8ec0456f9ef108910ba3281ac3189cee453fb2a2cf075b469883" },
+    { url = "https://github.com/marcosflz/nas-adk/releases/download/v0.5.0/nas_adk-0.5.0-py3-none-any.whl", hash = "sha256:bb48729b4c4bb781a7d73774e6ad75ba788a1d646a0e8abb0945c47a1ddcba09" },
 ]
 
 [package.metadata]

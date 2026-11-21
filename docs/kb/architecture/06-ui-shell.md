@@ -2,7 +2,7 @@
 id: kb/architecture/ui-shell
 title: Shell de cuatro hojas, paneles y estado visual
 status: stable
-updated: 2026-11-13
+updated: 2026-11-15
 source:
   - crates/ui/src/app.rs
   - crates/ui/src/layout.rs
@@ -103,8 +103,18 @@ StatusBar (compilación · proyecto · Ln/Col · palabras · página · motor ·
 - `Ctrl+S` tiene una sola acción (`panels::editor::SaveDocument`): el editor la registra y
   el shell la atiende cuando el foco está fuera del editor. En 0.2 había dos acciones con
   el mismo atajo.
-- `LSX_QA_OPEN_SETTINGS=1|ai` abre Ajustes (o su sección IA) al arrancar para capturas
-  deterministas de QA; no se usa en producción.
+- `LSX_QA_OPEN_SETTINGS=1|ai|api|subscriptions` abre Ajustes (o esa sección) al arrancar
+  para capturas deterministas de QA; no se usa en producción.
+- **Botones en la barra superior (Windows)**: la barra del `TitleBar` de gpui-kit es una
+  zona `WindowControlArea::Drag`. GPUI responde `HTCAPTION` si esa zona está entre los
+  hitboxes bajo el cursor **aunque haya un botón encima**; Windows convierte el clic en
+  «mover ventana» y el botón no recibe el `click`. Todo grupo interactivo dentro del
+  `TitleBar` debe llevar `.occlude()` (`render_title_bar`); los huecos siguen arrastrando.
+  En 0.3.0 esto dejaba muertos el engranaje, los toggles de paneles y la barra de menús. Los
+  tests con `TestAppContext` no lo detectan (la ventana de test no hace hit test de controles).
+- Los menús de una **cabecera** se anclan con `Anchor::TopRight` (abren hacia abajo).
+  `BottomRight` los abre hacia arriba sin darles la vuelta: en la cabecera del chat caían
+  sobre la toolbar.
 
 ## Ajustes y atajos
 

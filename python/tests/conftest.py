@@ -7,6 +7,11 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 import pytest
+
+# Antes que nas: en Windows prepara su import (ver lsx_agent/__init__.py).
+import lsx_agent  # noqa: F401
+
+# isort: split
 from nas.adk.models.base_llm import BaseLlm, LlmRequest, LlmResponse, ToolCall
 
 from lsx_agent.protocol import Transport

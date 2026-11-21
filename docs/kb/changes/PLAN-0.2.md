@@ -259,9 +259,22 @@ verified: true
   - catálogo real del proveedor para elegir modelos y ★ predeterminado;
   - el chat relee el catálogo al cambiar la configuración.
 - **Pendiente:**
-  - revisión manual del selector de modelos con un proveedor real;
-  - ChatGPT como suscripción, cuando nas-adk lo soporte.
+  - revisión manual del selector de modelos con un proveedor real.
 - **Evidencia:** CHG-0018.
+
+### P3-AI-3 / P3-UI-4 — Botones de la barra superior, Claude y ChatGPT
+
+- **Estado:** ✅ DONE (2026-11-15)
+- **Entrega:**
+  - botones del `TitleBar` y menús del chat vuelven a responder;
+  - nas-adk 0.5.0;
+  - catálogo real de Claude;
+  - suscripción de ChatGPT con «Sign in with ChatGPT».
+- **Pendiente:**
+  - revisión manual de los clics en Windows;
+  - inicio de sesión real de ChatGPT;
+  - en nas-adk, importar `fcntl`/`termios` de forma perezosa (para retirar el shim).
+- **Evidencia:** CHG-0019.
 
 ## Orden de ejecución del swarm
 

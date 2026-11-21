@@ -6,7 +6,7 @@
 //! | Familia            | Proveedores                                              | Credencial                         |
 //! |--------------------|----------------------------------------------------------|------------------------------------|
 //! | **Claves de API**  | OpenRouter, OpenAI, Anthropic, Gemini, DeepSeek, LM Studio | clave en `config/secrets/ai.json`  |
-//! | **Suscripciones**  | OpenCode Go (clave), Claude (CLI `claude`)               | clave o sesión del CLI             |
+//! | **Suscripciones**  | OpenCode Go (clave), Claude (CLI `claude`), ChatGPT       | clave, sesión del CLI u OAuth      |
 //!
 //! Varios proveedores pueden estar activos a la vez. Por proveedor se guarda, en
 //! `config/secrets/ai.json`:
@@ -44,6 +44,10 @@ use serde_json::{Map, Value, json};
 pub const PROBE_TIMEOUT: Duration = Duration::from_secs(90);
 /// Presupuesto de la consulta del catálogo de un proveedor (el agente corta a los 12 s).
 pub const LIST_TIMEOUT: Duration = Duration::from_secs(30);
+/// El listado de Claude espera al CLI (hasta 60 s en el agente): margen extra.
+pub const CLAUDE_LIST_TIMEOUT: Duration = Duration::from_secs(90);
+/// Inicio de sesión de ChatGPT: el agente espera 5 min la redirección del navegador.
+pub const CHATGPT_LOGIN_TIMEOUT: Duration = Duration::from_secs(330);
 /// Máximo de modelos activos por proveedor (protege el selector del chat).
 pub const MAX_ACTIVE_MODELS: usize = 500;
 
@@ -73,6 +77,8 @@ pub enum LinkFlow {
     Key,
     /// Con la sesión del CLI `claude` (`claude auth login`).
     Cli,
+    /// Con «Sign in with ChatGPT» (OAuth con PKCE; el agente recoge la redirección).
+    ChatGpt,
 }
 
 /// Proveedor de IA que el agente sabe usar.
@@ -103,7 +109,7 @@ pub struct ProviderSpec {
 }
 
 /// Proveedores soportados (mismo orden, ids y modelos que `providers.py`).
-pub const PROVIDERS: [ProviderSpec; 8] = [
+pub const PROVIDERS: [ProviderSpec; 9] = [
     // --- Claves de API --------------------------------------------------------------
     ProviderSpec {
         id: "openrouter",
@@ -219,9 +225,24 @@ pub const PROVIDERS: [ProviderSpec; 8] = [
             ("default", "Modelo por defecto del CLI"),
             ("sonnet", "Sonnet"),
             ("opus", "Opus"),
+            ("fable", "Fable"),
             ("haiku", "Haiku"),
         ],
         help: "Tu plan de Claude (Pro o Max) a través del CLI `claude`. Uso personal y local.",
+        placeholder: "",
+        custom_base_url: None,
+        can_list: true,
+    },
+    ProviderSpec {
+        id: "chatgpt",
+        name: "ChatGPT",
+        kind: ProviderKind::Subscription,
+        link: LinkFlow::ChatGpt,
+        env_key: None,
+        needs_key: false,
+        // Sin sugeridos: al vincular se activan los modelos que ofrece el plan.
+        models: &[],
+        help: "Tu plan de ChatGPT (Plus, Pro…), con «Sign in with ChatGPT». Uso personal.",
         placeholder: "",
         custom_base_url: None,
         can_list: true,
@@ -291,6 +312,8 @@ pub enum CredentialSource {
     Env(&'static str),
     /// CLI `claude` encontrado en esta ruta.
     Cli(PathBuf),
+    /// Cuenta de ChatGPT vinculada (correo, si OpenAI lo devolvió).
+    Account(Option<String>),
 }
 
 /// Error accionable de la capa de conexión.
@@ -419,11 +442,20 @@ impl AiSetup {
     /// con sus modelos sugeridos.
     pub fn save_key(&self, provider_id: &str, key: &str) -> Result<(), AiSetupError> {
         let spec = known(provider_id)?;
-        if spec.link != LinkFlow::Key {
-            return Err(AiSetupError::Invalid(format!(
-                "{} no usa clave: inicia sesión con `claude auth login`",
-                spec.name
-            )));
+        match spec.link {
+            LinkFlow::Key => {}
+            LinkFlow::Cli => {
+                return Err(AiSetupError::Invalid(format!(
+                    "{} no usa clave: inicia sesión con `claude auth login`",
+                    spec.name
+                )));
+            }
+            LinkFlow::ChatGpt => {
+                return Err(AiSetupError::Invalid(format!(
+                    "{} no usa clave: vincula la cuenta con «Iniciar sesión con ChatGPT»",
+                    spec.name
+                )));
+            }
         }
         let key = key.trim();
         if key.len() < 8 || key.chars().any(char::is_whitespace) {
@@ -538,16 +570,13 @@ impl AiSetup {
                 "este proveedor no permite listar modelos: escribe su nombre".to_owned(),
             ));
         }
-        let reply = self.run_agent(&["--list-models", spec.id], LIST_TIMEOUT)?;
-        if reply.get("ok").and_then(Value::as_bool) != Some(true) {
-            return Err(AiSetupError::Provider(
-                reply
-                    .get("error")
-                    .and_then(Value::as_str)
-                    .unwrap_or("respuesta vacía")
-                    .to_owned(),
-            ));
-        }
+        let timeout = if spec.link == LinkFlow::Cli {
+            CLAUDE_LIST_TIMEOUT
+        } else {
+            LIST_TIMEOUT
+        };
+        let reply = self.run_agent(&["--list-models", spec.id], timeout)?;
+        agent_ok(&reply)?;
         Ok(reply
             .get("models")
             .and_then(Value::as_array)
@@ -597,6 +626,24 @@ impl AiSetup {
             ));
         };
         open_console(&cli, &["auth", "login"])
+    }
+
+    /// Vincula el plan de ChatGPT: el agente abre el navegador, espera la redirección en
+    /// `127.0.0.1:1455` y guarda las credenciales en `ai.json`. Bloquea hasta que la
+    /// persona autoriza o caduca (5 min): ejecútalo en segundo plano. Devuelve la cuenta.
+    pub fn login_chatgpt(&self) -> Result<Option<String>, AiSetupError> {
+        let reply = self.run_agent(&["--chatgpt-login"], CHATGPT_LOGIN_TIMEOUT)?;
+        agent_ok(&reply)?;
+        Ok(reply
+            .get("account")
+            .and_then(Value::as_str)
+            .map(str::to_owned))
+    }
+
+    /// Desvincula ChatGPT: revoca (mejor esfuerzo) y borra las credenciales.
+    pub fn logout_chatgpt(&self) -> Result<(), AiSetupError> {
+        let reply = self.run_agent(&["--chatgpt-logout"], LIST_TIMEOUT)?;
+        agent_ok(&reply)
     }
 
     /// Ejecuta `python -m lsx_agent <args>` y devuelve su JSON de una línea.
@@ -706,6 +753,20 @@ impl AiSetup {
     }
 }
 
+/// `{"ok": true, …}` del agente, o su `error` como [`AiSetupError::Provider`].
+fn agent_ok(reply: &Value) -> Result<(), AiSetupError> {
+    if reply.get("ok").and_then(Value::as_bool) == Some(true) {
+        return Ok(());
+    }
+    Err(AiSetupError::Provider(
+        reply
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("respuesta vacía")
+            .to_owned(),
+    ))
+}
+
 fn known(provider_id: &str) -> Result<&'static ProviderSpec, AiSetupError> {
     provider(provider_id)
         .ok_or_else(|| AiSetupError::Invalid(format!("proveedor desconocido: {provider_id}")))
@@ -715,7 +776,7 @@ fn provider_status(spec: &'static ProviderSpec, secrets: &Map<String, Value>) ->
     let entry = secrets.get(spec.id).and_then(Value::as_object);
     let source = credential_source(spec, entry);
     let has_credential = match spec.link {
-        LinkFlow::Cli => source != CredentialSource::None,
+        LinkFlow::Cli | LinkFlow::ChatGpt => source != CredentialSource::None,
         LinkFlow::Key if !spec.needs_key => entry.is_some() || source != CredentialSource::None,
         LinkFlow::Key => source != CredentialSource::None,
     };
@@ -746,9 +807,35 @@ fn provider_status(spec: &'static ProviderSpec, secrets: &Map<String, Value>) ->
 }
 
 fn credential_source(spec: &ProviderSpec, entry: Option<&Map<String, Value>>) -> CredentialSource {
+    match spec.link {
+        LinkFlow::Cli => {
+            let bin = std::env::var("CLAUDE_CODE_BIN").unwrap_or_else(|_| "claude".to_owned());
+            return find_on_path(&bin).map_or(CredentialSource::None, CredentialSource::Cli);
+        }
+        LinkFlow::ChatGpt => {
+            // Mismo criterio que `chatgpt.credentials()` en el agente.
+            let credentials = entry
+                .and_then(|entry| entry.get("credentials"))
+                .and_then(Value::as_object)
+                .filter(|creds| {
+                    ["clientId", "accessToken", "refreshToken"]
+                        .iter()
+                        .all(|key| creds.get(*key).and_then(Value::as_str).is_some())
+                        && creds.get("expiresAt").is_some_and(Value::is_number)
+                });
+            return credentials.map_or(CredentialSource::None, |creds| {
+                CredentialSource::Account(
+                    creds
+                        .get("account")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                )
+            });
+        }
+        LinkFlow::Key => {}
+    }
     let Some(env_key) = spec.env_key else {
-        let bin = std::env::var("CLAUDE_CODE_BIN").unwrap_or_else(|_| "claude".to_owned());
-        return find_on_path(&bin).map_or(CredentialSource::None, CredentialSource::Cli);
+        return CredentialSource::None;
     };
     if let Some(key) = entry
         .and_then(|entry| entry.get("apiKey"))
@@ -1144,7 +1231,7 @@ mod tests {
             .map(|s| s.id)
             .collect();
         assert!(api.contains(&"openrouter") && api.contains(&"anthropic"));
-        assert_eq!(subs, ["opencode", "claude-code"]);
+        assert_eq!(subs, ["opencode", "claude-code", "chatgpt"]);
         assert_eq!(api.len() + subs.len(), PROVIDERS.len());
     }
 
@@ -1272,6 +1359,49 @@ mod tests {
 
         setup.remove_provider("lmstudio").unwrap();
         assert!(!status_of(&setup, "lmstudio").added);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn chatgpt_se_vincula_con_su_cuenta_y_no_con_una_clave() {
+        let (root, dir) = temp_root("chatgpt");
+        let setup = AiSetup::from_root(root);
+        let before = status_of(&setup, "chatgpt");
+        assert!(!before.has_credential && !before.configured);
+        assert!(before.models.is_empty(), "sin sugeridos hasta vincular");
+        assert!(matches!(
+            setup.save_key("chatgpt", "loquesea12345"),
+            Err(AiSetupError::Invalid(_))
+        ));
+
+        // Lo que escribe `lsx_agent --chatgpt-login` (sin modelos aún: «Revisar»).
+        std::fs::create_dir_all(setup.secrets_path().parent().unwrap()).unwrap();
+        std::fs::write(
+            setup.secrets_path(),
+            r#"{"chatgpt": {"credentials": {"clientId": "c", "accessToken": "a",
+                "refreshToken": "r", "expiresAt": 1.0e10, "account": "persona@example.com"}}}"#,
+        )
+        .unwrap();
+        let linked = status_of(&setup, "chatgpt");
+        assert!(linked.has_credential && !linked.configured);
+        assert_eq!(
+            linked.source,
+            CredentialSource::Account(Some("persona@example.com".to_owned()))
+        );
+
+        setup
+            .set_models("chatgpt", &[ModelChoice::new("gpt-5.5", "GPT-5.5")])
+            .unwrap();
+        assert!(status_of(&setup, "chatgpt").configured);
+        assert!(setup.models().contains(&"chatgpt/gpt-5.5".to_owned()));
+
+        // Credenciales incompletas: no cuentan como cuenta vinculada.
+        std::fs::write(
+            setup.secrets_path(),
+            r#"{"chatgpt": {"credentials": {"clientId": "c"}}}"#,
+        )
+        .unwrap();
+        assert!(!status_of(&setup, "chatgpt").has_credential);
         let _ = std::fs::remove_dir_all(dir);
     }
 

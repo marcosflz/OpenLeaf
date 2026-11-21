@@ -27,8 +27,13 @@ verified: true
 
 `lsx-chat` lanza `agent\python\python.exe -P -s -m lsx_agent` y le habla en NDJSON por
 stdin/stdout. El agente (`python/lsx_agent`) usa [nas-adk](https://github.com/marcosflz/nas-adk)
-0.3.0 para el bucle modelo ↔ herramientas, las sesiones y los proveedores. Sustituye a
+0.5.0 para el bucle modelo ↔ herramientas, las sesiones y los proveedores. Sustituye a
 opencode desde 0.3 ([ADR-001](../../decisions/ADR-001-agente-nas-adk.md)).
+
+> **Windows y nas-adk 0.5.0**: `claude_code/login.py` importa `fcntl` y `termios` (solo POSIX)
+> al cargar `nas.adk.models`. `lsx_agent/__init__.py` registra módulos falsos solo durante ese
+> import y los retira después. Por eso `lsx_agent` debe importarse **antes** que `nas` (también
+> en `tests/conftest.py`). Quitar cuando nas-adk importe esos módulos de forma perezosa.
 
 ## Protocolo
 
@@ -93,7 +98,7 @@ Dos familias, como en nexus, cada una con su sección de Ajustes:
 | Familia | Proveedores | Backend nas-adk |
 |---|---|---|
 | **Claves de API** | `openrouter`, `openai`, `anthropic`, `gemini`, `deepseek`, `lmstudio` | `openrouter`, `anthropic` y `openai-compatible` con URL fija (solo `lmstudio` la deja cambiar) |
-| **Suscripciones** | `opencode` (OpenCode Go, con clave), `claude-code` (CLI `claude`) | `opencode`, `claude-code` |
+| **Suscripciones** | `opencode` (OpenCode Go, con clave), `claude-code` (CLI `claude`), `chatgpt` («Sign in with ChatGPT») | `opencode`, `claude-code`, `chatgpt` |
 
 - **Varios activos a la vez y sin default impuesto**: el catálogo solo incluye proveedores
   con credencial, activados y con algún modelo activo. Lleva `kind` por proveedor.
@@ -103,7 +108,14 @@ Dos familias, como en nexus, cada una con su sección de Ajustes:
   - Una lista de cadenas es el formato antiguo y se suma a los sugeridos.
   - La clave también vale por variable de entorno.
   - `claude-code` requiere el CLI `claude` autenticado por la persona; es de uso personal y
-    local.
+    local. Su catálogo sale del propio CLI (`ClaudeCodeLlm.list_models`, protocolo de control,
+    sin inferencia): alias y versiones de la cuenta. Si el CLI falla, se ofrecen los alias.
+  - `chatgpt` (`lsx_agent/chatgpt.py`): OAuth con PKCE de nas-adk. `--chatgpt-login` abre el
+    navegador y escucha la redirección en `127.0.0.1:1455` (fija de OpenAI), así que no hay
+    que pegar ninguna URL. Guarda `credentials`, `clientId` y `hostId` en la entrada `chatgpt`.
+    El token se renueva antes de cada petición (`RefreshingChatGptLlm`) y el de refresco rota,
+    así que se guarda en cada renovación. `--chatgpt-logout` revoca (mejor esfuerzo) y borra
+    las credenciales.
 - **Predeterminado**: `ai.model` de `settings.json` (★ en los chips). Si el modelo de la
   sesión deja de estar activo, `resolve_initial_model` elige otro (`ProviderCatalog::offers`).
 - **Ajustes** (`ai_setup.rs` + `settings_providers.rs`): guarda claves, interruptor y modelos
@@ -128,7 +140,8 @@ Cada escritura guarda un checkpoint (antes y después).
 `scripts/get-agent.ps1` (`make agent`) monta:
 
 - `agent/python`: embeddable 3.12.10 con `._pth` → `..\lib`, `..`;
-- `agent/lib`: nas-adk 0.3.0 con el extra `anthropic`, wheels win_amd64 instaladas con `uv pip`;
+- `agent/lib`: nas-adk 0.5.0 con el extra `anthropic`, wheels win_amd64 instaladas con `uv pip`
+  (al cambiar de versión, `get-agent.ps1 -Force`: si `agent/lib/nas` existe, no lo reinstala);
 - `agent/lsx_agent`.
 
 Versiones y SHA256 fijados. Unos 74 MB, frente a los ~180 MB de opencode.

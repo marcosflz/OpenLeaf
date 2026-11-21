@@ -58,10 +58,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--log", type=Path, default=None, help="archivo de log (o stderr)")
     parser.add_argument("--probe", default=None, help="prueba proveedor/modelo y termina")
     parser.add_argument("--list-models", default=None, help="lista los modelos de un proveedor")
+    parser.add_argument(
+        "--chatgpt-login", action="store_true", help="vincula el plan de ChatGPT (navegador)"
+    )
+    parser.add_argument("--chatgpt-logout", action="store_true", help="desvincula ChatGPT")
     args = parser.parse_args(argv)
 
     if args.list_models:
         result = list_models(args.list_models, Secrets(args.secrets))
+        sys.stdout.write(json.dumps(result, ensure_ascii=False) + "\n")
+        return 0
+
+    if args.chatgpt_login or args.chatgpt_logout:
+        from . import chatgpt
+
+        secrets = Secrets(args.secrets)
+        try:
+            result = chatgpt.login(secrets) if args.chatgpt_login else chatgpt.logout(secrets)
+        except chatgpt.ChatGptError as error:
+            result = {"ok": False, "error": str(error)}
         sys.stdout.write(json.dumps(result, ensure_ascii=False) + "\n")
         return 0
 

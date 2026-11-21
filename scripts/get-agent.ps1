@@ -21,8 +21,8 @@
 param(
     [string]$PythonVersion = '3.12.10',
     [string]$PythonSha256 = '4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3',
-    [string]$NasAdkVersion = '0.3.0',
-    [string]$NasAdkSha256 = '2bfc049455af8ec0456f9ef108910ba3281ac3189cee453fb2a2cf075b469883',
+    [string]$NasAdkVersion = '0.5.0',
+    [string]$NasAdkSha256 = 'bb48729b4c4bb781a7d73774e6ad75ba788a1d646a0e8abb0945c47a1ddcba09',
     [string]$Destination,
     [switch]$Force
 )

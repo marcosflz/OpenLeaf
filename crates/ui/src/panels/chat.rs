@@ -1202,7 +1202,7 @@ impl ChatPanel {
             .dropdown_caret(true)
             .tooltip("Modelo de la sesión")
             .disabled(self.replay.is_some())
-            .dropdown_menu_with_anchor(Anchor::BottomRight, move |menu, _window, _cx| {
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _window, _cx| {
                 let mut menu = menu.label("Modelo");
                 if models.is_empty() {
                     let weak = weak.clone();
@@ -1363,7 +1363,7 @@ impl ChatPanel {
             .selected(current != PermissionPreset::Ask)
             .tooltip(current.hint())
             .disabled(self.replay.is_some())
-            .dropdown_menu_with_anchor(Anchor::BottomRight, move |menu, _window, _cx| {
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _window, _cx| {
                 let mut menu = menu.label("Permisos de la IA");
                 for preset in [
                     PermissionPreset::Ask,
@@ -1404,7 +1404,7 @@ impl ChatPanel {
             .dropdown_caret(true)
             .tooltip("Modo del asistente")
             .disabled(self.replay.is_some())
-            .dropdown_menu_with_anchor(Anchor::BottomRight, move |menu, _window, _cx| {
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _window, _cx| {
                 let mut menu = menu.label("Modo");
                 if agents.is_empty() {
                     let weak = weak.clone();
@@ -1449,7 +1449,7 @@ impl ChatPanel {
             .icon(IconName::Clock)
             .tooltip("Sesiones del proyecto")
             .disabled(self.replay.is_some())
-            .dropdown_menu_with_anchor(Anchor::BottomRight, move |menu, _window, _cx| {
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _window, _cx| {
                 let mut menu = menu.label("Sesiones");
                 if sessions.is_empty() {
                     menu = menu.item(PopupMenuItem::new("Sin sesiones todavía").disabled(true));
@@ -2535,6 +2535,30 @@ mod tests {
             PermissionPreset::from_setting("project-edits"),
             PermissionPreset::ProjectEdits
         );
+    }
+
+    /// Los menús de la cabecera (modo, permisos, modelo, sesiones) se abren al
+    /// hacer clic dentro del chrome de la hoja: el foco pasa al menú.
+    #[test]
+    fn los_menus_de_la_cabecera_se_abren_con_un_clic() {
+        for id in [
+            "chat-agent",
+            "chat-permissions",
+            "chat-model",
+            "chat-sessions",
+        ] {
+            with_chat(&mut TestAppContext::single(), |cx, _chat, _textarea| {
+                let before = cx.update(|window, cx| window.focused(cx));
+                cx.update(|window, cx| window.click(id, cx));
+                cx.update(|window, cx| window.render_frame(cx));
+                let after = cx.update(|window, cx| window.focused(cx));
+                assert!(
+                    after.is_some(),
+                    "{id}: el clic no dejó el foco en ningún sitio"
+                );
+                assert_ne!(after, before, "{id}: el clic no abrió el menú");
+            });
+        }
     }
 
     /// Regresión (QA 2026-10-18): el clic en el composer debe dejar el foco en

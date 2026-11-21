@@ -6,7 +6,7 @@ Resumen de las dos rutas: **CI** (recomendada para el instalador ligero) y **loc
 ## Atajos con `make` (Windows)
 
 ```powershell
-make agent        # monta agent/ (Python 3.12 embebido + nas-adk 0.3.0 + lsx_agent); requiere uv
+make agent        # monta agent/ (Python 3.12 embebido + nas-adk 0.5.0 + lsx_agent); requiere uv
 make release      # build release + dist + Setup.exe + SHA-256
 make publish      # crea la release v0.2.0 en GitHub (gh autenticado)
 make gates        # fmt + clippy + tests + OKF
